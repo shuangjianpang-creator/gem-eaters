@@ -130,9 +130,21 @@ function makeSnake() {
 const MAX_AVATAR_IMAGE_BYTES = 32 * 1024;  // ~32KB cap
 
 function resetSnake(s, room) {
-    const size = room ? mapOf(room).size : WORLD_WIDTH;
-    const x = Math.random() * (size - 400) + 200;
-    const y = Math.random() * (size - 400) + 200;
+    let x, y;
+    // In LSS the playable area IS the safe-zone circle — spawn inside it
+    // (with a margin) so snakes aren't insta-killed by the zone check.
+    if (room && room.mode === 'lastman' && room.safeZone) {
+        const { cx, cy, r } = room.safeZone;
+        const spawnR = Math.max(0, r * 0.65);
+        const ang = Math.random() * Math.PI * 2;
+        const rad = Math.sqrt(Math.random()) * spawnR;
+        x = cx + Math.cos(ang) * rad;
+        y = cy + Math.sin(ang) * rad;
+    } else {
+        const size = room ? mapOf(room).size : WORLD_WIDTH;
+        x = Math.random() * (size - 400) + 200;
+        y = Math.random() * (size - 400) + 200;
+    }
     const angle = Math.random() * Math.PI * 2;
     const body = [];
     for (let i = 0; i < INITIAL_SEGMENTS; i++) body.push({ x, y: y + i * SEGMENT_DISTANCE });
@@ -244,9 +256,13 @@ function updateSnake(room, s, ws, now) {
     s.x += Math.cos(s.angle) * speed;
     s.y += Math.sin(s.angle) * speed;
 
-    const size = mapOf(room).size;
-    if (s.x < 0 || s.x > size || s.y < 0 || s.y > size) {
-        killSnake(room, s, 'wall', ws); return;
+    // LSS skips the rect wall — the safe-zone circle is the only boundary
+    // (handled by checkSafeZone). Other modes use the rectangular world.
+    if (room.mode !== 'lastman') {
+        const size = mapOf(room).size;
+        if (s.x < 0 || s.x > size || s.y < 0 || s.y > size) {
+            killSnake(room, s, 'wall', ws); return;
+        }
     }
 
     if (s.growthQueue > 0) {
@@ -265,6 +281,26 @@ function updateSnake(room, s, ws, now) {
             seg.y = leader.y - sdy * ratio;
         }
         leader = seg;
+    }
+
+    // LSS body squeeze: any segment that ended up outside the safe-zone circle
+    // gets projected back to just inside the wall. The body bunches up against
+    // the boundary instead of trailing into the void.
+    if (room.mode === 'lastman' && room.safeZone) {
+        const { cx, cy, r } = room.safeZone;
+        const maxR = Math.max(0, r - 4);  // small margin from the wall
+        const maxR2 = maxR * maxR;
+        for (const seg of s.body) {
+            const dx = seg.x - cx;
+            const dy = seg.y - cy;
+            const d2 = dx * dx + dy * dy;
+            if (d2 > maxR2 && d2 > 0.001) {
+                const d = Math.sqrt(d2);
+                const scale = maxR / d;
+                seg.x = cx + dx * scale;
+                seg.y = cy + dy * scale;
+            }
+        }
     }
 }
 
