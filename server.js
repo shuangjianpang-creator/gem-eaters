@@ -56,7 +56,7 @@ const TEAM_COLORS = { red: '#f85149', blue: '#58a6ff' };
 const LSS_GRACE_MS = 30_000;           // 30s before the zone starts to shrink
 const LSS_SHRINK_DURATION_MS = 110_000; // shrink takes ~110s
 const LSS_MIN_RADIUS = 220;            // minimum radius at full shrink
-const LSS_INIT_RADIUS_FRACTION = 0.55; // initial radius as a fraction of map size
+const LSS_INIT_RADIUS_FRACTION = 0.5; // initial radius as a fraction of map size — capped so the circle inscribes within the map rect
 
 // Built-in maps. Theme only changes visuals; size/foodCount adjust gameplay feel.
 const MAPS = [
