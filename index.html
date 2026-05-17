@@ -46,6 +46,80 @@
         #ui .pill.clickable { cursor: pointer; pointer-events: auto; user-select: none; }
         #ui .pill.clickable:hover { background: rgba(33, 38, 45, 0.9); }
 
+        #loadingSplash {
+            position: fixed;
+            inset: 0;
+            background: radial-gradient(circle at 50% 40%, #1c3618 0%, #0a140a 60%, #020604 100%);
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: opacity 0.4s;
+        }
+        #loadingSplash.hide { opacity: 0; pointer-events: none; }
+        .loadingInner { text-align: center; color: #c9d1d9; }
+        .loadingLogo {
+            font-size: 64px;
+            line-height: 1;
+            margin-bottom: 14px;
+            animation: logoBob 1.4s ease-in-out infinite;
+        }
+        @keyframes logoBob {
+            0%, 100% { transform: translateY(0) rotate(-6deg); }
+            50%      { transform: translateY(-8px) rotate(6deg); }
+        }
+        .loadingSpinner {
+            width: 38px; height: 38px;
+            border: 3px solid rgba(86, 211, 100, 0.25);
+            border-top-color: #56d364;
+            border-radius: 50%;
+            margin: 0 auto 14px auto;
+            animation: spin 0.9s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loadingTitle { font-size: 16px; font-weight: bold; }
+        .loadingHint { font-size: 12px; color: #8b949e; margin-top: 6px; max-width: 260px; }
+
+        /* Killer card in death panel */
+        #killerBlock { margin: 6px 0 12px 0; }
+        .killedByLabel {
+            font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+            color: #8b949e; margin-bottom: 6px;
+        }
+        .killerCard {
+            display: inline-flex; align-items: center; gap: 12px;
+            padding: 10px 16px; border-radius: 10px;
+            background: #1f0d0d; border: 1px solid #5a1a1a;
+        }
+        .killerAvatar {
+            width: 44px; height: 44px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 26px; line-height: 1;
+        }
+        .killerInfo { text-align: left; }
+        .killerName { font-weight: bold; font-size: 16px; color: #f85149; }
+        .killerScore { font-size: 12px; color: #c9d1d9; }
+
+        /* Kill toast — shown briefly when you eliminate someone */
+        #killToast {
+            position: absolute;
+            top: 80px; left: 50%;
+            transform: translate(-50%, -10px);
+            background: rgba(35, 134, 54, 0.92);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 14px;
+            font-size: 14px;
+            z-index: 20;
+            box-shadow: 0 4px 16px rgba(35, 134, 54, 0.5);
+            animation: toastIn 0.3s ease-out;
+        }
+        #killToast .killToastScore { color: #fffadd; font-weight: bold; }
+        @keyframes toastIn {
+            from { opacity: 0; transform: translate(-50%, -20px); }
+            to   { opacity: 1; transform: translate(-50%, 0); }
+        }
+
 
         /* Mode selector (in lobby panel) */
         #modeSelector { margin: 8px 0 12px 0; text-align: left; }
@@ -517,6 +591,16 @@
         <span class="pill" id="status">connecting...</span>
         <span class="pill clickable" id="muteToggle" title="Mute / unmute sounds">🔊</span>
     </div>
+
+    <!-- Cold-start splash: covers everything until we've received a welcome msg -->
+    <div id="loadingSplash">
+        <div class="loadingInner">
+            <div class="loadingLogo">🐍</div>
+            <div class="loadingSpinner"></div>
+            <div class="loadingTitle">Connecting to game server</div>
+            <div class="loadingHint" id="loadingHint">This usually takes a second…</div>
+        </div>
+    </div>
     <div id="spectatorOverlay" style="display:none">👁 Spectating: <span id="spectatorName">—</span></div>
 
     <div id="stage">
@@ -650,8 +734,24 @@
             <!-- DEATH PANEL (during playing) -->
             <div class="panel" id="deathPanel" style="display:none">
                 <h2>You died</h2>
+                <div id="killerBlock" style="display:none">
+                    <div class="killedByLabel">Killed by</div>
+                    <div class="killerCard">
+                        <div class="killerAvatar" id="killerAvatar">🐍</div>
+                        <div class="killerInfo">
+                            <div class="killerName" id="killerName">—</div>
+                            <div class="killerScore"><span id="killerScore">0</span> points</div>
+                        </div>
+                    </div>
+                </div>
                 <p id="deathReason"></p>
                 <button id="respawnButton">Respawn</button>
+            </div>
+
+            <!-- Kill toast (shown briefly when you eliminate someone) -->
+            <div id="killToast" style="display:none">
+                <span id="killToastIcon">💀</span>
+                <span>Killed <b id="killToastVictim">—</b> <span class="killToastScore">+<span id="killToastScore">0</span></span></span>
             </div>
 
             <!-- INTERMISSION PANEL -->
@@ -698,6 +798,18 @@ const inviteButton = document.getElementById("inviteButton");
 const URL_PARAMS = new URLSearchParams(location.search);
 const PENDING_ROOM_FROM_URL = URL_PARAMS.get("room");
 let pendingUrlJoinId = null;  // set while we're trying to join via ?room= URL
+
+// ---------------- cold-start splash ----------------
+const loadingSplash = document.getElementById("loadingSplash");
+const loadingHint = document.getElementById("loadingHint");
+// If still loading after 4s, mention the free-tier cold start
+setTimeout(() => {
+    if (loadingSplash && !loadingSplash.classList.contains("hide")) {
+        loadingHint.textContent =
+            "Server's waking up — free tier sleeps when idle, takes ~30s on the first request.";
+    }
+}, 4000);
+function hideSplash() { if (loadingSplash) loadingSplash.classList.add("hide"); }
 const createRoomButton = document.getElementById("createRoomButton");
 const roomsErrorEl = document.getElementById("roomsError");
 
@@ -1025,6 +1137,7 @@ let standings = null;
 let isDead = false;
 let lastDeathReason = "wall";
 let lastDeathScore = 0;
+let lastKiller = null;       // {id, name, avatar, color, score} or null
 
 let ws = null;
 
@@ -1099,6 +1212,7 @@ function handleMessage(event) {
         case "welcome":
             myId = msg.id;
             world = msg.world;
+            hideSplash();
             // If the URL had ?room=ID, auto-join that room after identity is sent.
             if (PENDING_ROOM_FROM_URL && !currentRoom) {
                 pendingUrlJoinId = PENDING_ROOM_FROM_URL;
@@ -1218,6 +1332,13 @@ function handleMessage(event) {
                 lastDeathReason = msg.reason;
                 lastDeathScore = msg.finalScore;
                 meEliminated = !!msg.eliminated;
+                lastKiller = msg.killerId ? {
+                    id: msg.killerId,
+                    name: msg.killerName,
+                    avatar: msg.killerAvatar,
+                    color: msg.killerColor,
+                    score: msg.killerScore,
+                } : null;
                 // Death explosion at our snake's last known position
                 const me = renderSnakes.find(s => s.id === myId);
                 if (me) spawnDeathBurst(me);
@@ -1231,6 +1352,9 @@ function handleMessage(event) {
                     }, 2500);
                 }
             }
+            break;
+        case "kill":
+            showKillToast(msg.victimName, msg.victimAvatar, msg.victimScore);
             break;
         case "error":
             // Invite-link join just failed: give a friendlier message and
@@ -1671,7 +1795,34 @@ function showDeathPanel() {
                      : lastDeathReason === 'obstacle' ? "Hit an obstacle."
                      : "Ran into another snake.";
     deathReasonEl.textContent = `${reasonText} Final score: ${lastDeathScore}`;
+    const killerBlock = document.getElementById("killerBlock");
+    if (lastKiller && lastDeathReason === 'snake') {
+        document.getElementById("killerAvatar").textContent = lastKiller.avatar || "🐍";
+        document.getElementById("killerAvatar").style.background = lastKiller.color || "#56d364";
+        document.getElementById("killerName").textContent = lastKiller.name || "anon";
+        document.getElementById("killerScore").textContent = lastKiller.score || 0;
+        killerBlock.style.display = "";
+    } else {
+        killerBlock.style.display = "none";
+    }
     showScreen("death");
+}
+
+const killToastEl = document.getElementById("killToast");
+const killToastVictimEl = document.getElementById("killToastVictim");
+const killToastScoreEl = document.getElementById("killToastScore");
+const killToastIconEl = document.getElementById("killToastIcon");
+function showKillToast(victimName, victimAvatar, victimScore) {
+    killToastIconEl.textContent = victimAvatar || "💀";
+    killToastVictimEl.textContent = victimName || "anon";
+    killToastScoreEl.textContent = victimScore || 0;
+    killToastEl.style.display = "";
+    killToastEl.style.animation = 'none';
+    void killToastEl.offsetWidth;  // force reflow so animation restarts
+    killToastEl.style.animation = '';
+    clearTimeout(showKillToast._t);
+    showKillToast._t = setTimeout(() => { killToastEl.style.display = "none"; }, 2500);
+    sndPowerup();  // celebratory sound
 }
 respawnButton.addEventListener("click", () => {
     send({ type: "respawn" });

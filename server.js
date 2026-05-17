@@ -266,10 +266,9 @@ function fillFood(room) {
     while (room.food.length < target) room.food.push(randomFood(room));
 }
 
-function killSnake(room, s, reason, ws) {
+function killSnake(room, s, reason, ws, killer = null) {
     if (!s.alive) return;
     s.alive = false;
-    // In Last Snake Standing, dying takes you out for the rest of the round.
     if (room.mode === 'lastman') s.eliminated = true;
     for (let i = 0; i < s.body.length; i += FOOD_PER_DEAD_SEGMENTS) {
         const seg = s.body[i];
@@ -280,15 +279,35 @@ function killSnake(room, s, reason, ws) {
             'regular',
         ));
     }
+    // Notify the victim — include killer attribution when known.
     if (ws && typeof ws !== 'string' && ws.readyState === 1) {
         ws.send(JSON.stringify({
             type: 'died',
             reason,
             finalScore: s.score,
             eliminated: !!s.eliminated,
+            killerId:     killer ? killer.id     : null,
+            killerName:   killer ? killer.name   : null,
+            killerAvatar: killer ? killer.avatar : null,
+            killerColor:  killer ? killer.color  : null,
+            killerScore:  killer ? killer.score  : null,
         }));
     }
-    // Bots auto-respawn in non-elimination modes
+    // Notify the killer with a toast ("you killed X (+N)")
+    if (killer && !killer.bot) {
+        // Find the killer's websocket
+        for (const [kws, ks] of room.members) {
+            if (ks === killer && typeof kws !== 'string' && kws.readyState === 1) {
+                kws.send(JSON.stringify({
+                    type: 'kill',
+                    victimName: s.name,
+                    victimAvatar: s.avatar,
+                    victimScore: s.score,
+                }));
+                break;
+            }
+        }
+    }
     if (s.bot && room.mode !== 'lastman') {
         s.respawnAt = Date.now() + BOT_RESPAWN_MS;
     }
@@ -375,17 +394,20 @@ function checkSnakeCollisions(room, now) {
     for (const [wsA, a] of room.members) {
         if (!a.alive) continue;
         if (a.shieldUntil > now) continue;          // shield: invulnerable
+        let killer = null;
         for (const [, b] of room.members) {
             if (a === b || !b.alive) continue;
             if (room.mode === 'teams' && a.team && b.team && a.team === b.team) continue;
             for (const seg of b.body) {
                 const dx = a.x - seg.x;
                 const dy = a.y - seg.y;
-                if (dx * dx + dy * dy < hitR2) { deaths.push([a, wsA]); break; }
+                if (dx * dx + dy * dy < hitR2) { killer = b; break; }
             }
+            if (killer) break;
         }
+        if (killer) deaths.push([a, wsA, killer]);
     }
-    for (const [s, ws] of deaths) killSnake(room, s, 'snake', ws);
+    for (const [s, ws, killer] of deaths) killSnake(room, s, 'snake', ws, killer);
 }
 
 function checkFood(room, now) {
@@ -789,35 +811,84 @@ function removeBotFromRoom(room) {
 
 function updateBotAI(room, bot) {
     if (!bot.alive) return;
-    // Pick nearest food as target.
-    let nx = bot.x + Math.cos(bot.angle) * 200;
-    let ny = bot.y + Math.sin(bot.angle) * 200;
-    let minD2 = Infinity;
-    for (const f of room.food) {
-        const dx = f.x - bot.x, dy = f.y - bot.y;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < minD2) { minD2 = d2; nx = f.x; ny = f.y; }
-    }
-    bot.targetX = nx;
-    bot.targetY = ny;
 
-    // LSS — steer back toward center if near the shrinking wall.
+    // ---- 1. Body avoidance: sum repulsion vectors from nearby snake segments ----
+    const DANGER_R = 180;
+    const DANGER_R2 = DANGER_R * DANGER_R;
+    let avoidX = 0, avoidY = 0, dangerCount = 0;
+    for (const [, s] of room.members) {
+        if (s === bot || !s.alive) continue;
+        if (room.mode === 'teams' && s.team && bot.team && s.team === bot.team) continue;
+        for (const seg of s.body) {
+            const dx = bot.x - seg.x, dy = bot.y - seg.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < DANGER_R2 && d2 > 0.01) {
+                const w = 1 - Math.sqrt(d2) / DANGER_R;  // closer = stronger
+                avoidX += dx * w; avoidY += dy * w;
+                dangerCount++;
+            }
+        }
+    }
+
+    // ---- 2. Hunt mode: if we're bigger than a nearby snake, chase its head ----
+    let target = null;
+    const HUNT_R2 = 600 * 600;
+    if (bot.body.length > 22) {
+        let bestD = Infinity;
+        for (const [, s] of room.members) {
+            if (s === bot || !s.alive) continue;
+            if (room.mode === 'teams' && s.team && bot.team && s.team === bot.team) continue;
+            if (s.body.length + 5 >= bot.body.length) continue;  // only chase smaller (with margin)
+            const dx = s.x - bot.x, dy = s.y - bot.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < bestD && d2 < HUNT_R2) { bestD = d2; target = s; }
+        }
+    }
+
+    // ---- 3. Fall back to nearest food ----
+    if (!target) {
+        let bestD = Infinity;
+        for (const f of room.food) {
+            const dx = f.x - bot.x, dy = f.y - bot.y;
+            const d2 = dx * dx + dy * dy;
+            // Prefer power-ups slightly (worth more / interesting)
+            const weighted = f.type !== 'regular' ? d2 * 0.6 : d2;
+            if (weighted < bestD) { bestD = weighted; target = f; }
+        }
+    }
+
+    if (target) {
+        bot.targetX = target.x;
+        bot.targetY = target.y;
+    }
+
+    // ---- 4. Apply avoidance: override target direction if there's danger nearby ----
+    if (dangerCount > 0) {
+        // Blend: 70% avoid, 30% target — keeps bot moving but mostly dodging
+        const tx = (bot.targetX - bot.x);
+        const ty = (bot.targetY - bot.y);
+        const tlen = Math.sqrt(tx * tx + ty * ty) || 1;
+        const ax = avoidX, ay = avoidY;
+        const alen = Math.sqrt(ax * ax + ay * ay) || 1;
+        bot.targetX = bot.x + (ax / alen) * 200 * 0.7 + (tx / tlen) * 200 * 0.3;
+        bot.targetY = bot.y + (ay / alen) * 200 * 0.7 + (ty / tlen) * 200 * 0.3;
+    }
+
+    // ---- 5. Boundary handling: stay in the playable area ----
     if (room.mode === 'lastman' && room.safeZone) {
-        const dx = bot.x - room.safeZone.cx;
-        const dy = bot.y - room.safeZone.cy;
+        const dx = bot.x - room.safeZone.cx, dy = bot.y - room.safeZone.cy;
         const d = Math.sqrt(dx * dx + dy * dy);
         if (d > room.safeZone.r - 100) {
             bot.targetX = room.safeZone.cx;
             bot.targetY = room.safeZone.cy;
         }
     } else {
-        // Other modes: steer away from rect walls.
         const size = mapOf(room).size;
         const m = 120;
-        if (bot.x < m || bot.x > size - m || bot.y < m || bot.y > size - m) {
-            bot.targetX = size / 2;
-            bot.targetY = size / 2;
-        }
+        if (bot.x < m) bot.targetX = Math.max(bot.targetX, size / 2);
+        if (bot.x > size - m) bot.targetX = Math.min(bot.targetX, size / 2);
+        if (bot.y < m) bot.targetY = Math.max(bot.targetY, size / 2);
+        if (bot.y > size - m) bot.targetY = Math.min(bot.targetY, size / 2);
     }
 }
 
