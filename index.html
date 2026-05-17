@@ -1,0 +1,2564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Multiplayer Snake</title>
+
+    <!-- PWA -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#0d1117">
+    <link rel="icon" href="icon.png" type="image/png">
+    <link rel="apple-touch-icon" href="icon.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Snake">
+    <meta name="mobile-web-app-capable" content="yes">
+    <style>
+        html, body {
+            height: 100%;
+            width: 100%;
+        }
+        body {
+            background-color: #0d1117;
+            color: #ffffff;
+            font-family: Arial, sans-serif;
+            margin: 0;
+            overflow: hidden;
+        }
+        #ui {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            z-index: 10;
+            font-size: 14px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            pointer-events: none;
+        }
+        #ui .pill {
+            padding: 4px 12px;
+            border-radius: 12px;
+            background: rgba(13, 17, 23, 0.78);
+            backdrop-filter: blur(4px);
+        }
+        #ui .pill.clickable { cursor: pointer; pointer-events: auto; user-select: none; }
+        #ui .pill.clickable:hover { background: rgba(33, 38, 45, 0.9); }
+
+        /* Mode selector (in lobby panel) */
+        #modeSelector { margin: 8px 0 12px 0; text-align: left; }
+        #modeSelector .modeHeader {
+            color: #8b949e; font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+            margin-bottom: 6px;
+            display: flex; justify-content: space-between; align-items: baseline;
+        }
+        #modeGrid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+        .modeCard {
+            background: #0d1117;
+            border: 2px solid #30363d;
+            border-radius: 8px;
+            padding: 8px 6px;
+            text-align: center;
+            cursor: pointer;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .modeCard.disabled { cursor: default; }
+        .modeCard:hover:not(.disabled) { background: #161b22; border-color: #58a6ff; }
+        .modeCard.selected { border-color: #56d364; background: #1f2a1f; }
+        .modeCard .mIcon { font-size: 20px; line-height: 1; }
+        .modeCard .mName { font-size: 12px; font-weight: bold; margin-top: 2px; }
+        .modeCard .mDesc { font-size: 10px; color: #8b949e; margin-top: 2px; line-height: 1.2; }
+        #stage {
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            height: 100vh;
+        }
+        #gameCanvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            background-color: #161b22;
+        }
+
+        #sidebar {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            pointer-events: none;
+        }
+        #roundPanel {
+            background: rgba(13, 17, 23, 0.78);
+            padding: 8px 14px 10px 14px;
+            border-radius: 6px;
+            text-align: center;
+            min-width: 140px;
+        }
+        #roundLabel {
+            font-size: 11px; color: #8b949e;
+            text-transform: uppercase; letter-spacing: 1px;
+            margin-bottom: 2px;
+        }
+        #roundTime {
+            font-size: 22px; font-weight: bold;
+            font-variant-numeric: tabular-nums;
+            line-height: 1.05;
+        }
+        #roundTime.urgent {
+            font-size: 44px; color: #f85149;
+            text-shadow: 0 0 12px rgba(248, 81, 73, 0.6);
+            animation: pulse 0.5s infinite alternate;
+        }
+        #leaderboard {
+            background: rgba(13, 17, 23, 0.7);
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            min-width: 140px;
+        }
+        #leaderboard h3 {
+            margin: 0 0 6px 0;
+            font-size: 12px;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        #leaderboard .row {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+        }
+        #leaderboard .me { color: #56d364; font-weight: bold; }
+
+        #overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.72);
+            border-radius: 10px;
+        }
+        #overlay.hidden { display: none; }
+        .panel {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            padding: 20px 28px;
+            text-align: center;
+            min-width: 320px;
+            max-width: 520px;
+            max-height: 86vh;
+            overflow-y: auto;
+        }
+        .panel h2 { margin: 0 0 8px 0; }
+        .slideHeader {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        .slideHeader h2 { margin: 0; }
+        .slideDots {
+            display: flex; gap: 6px; align-items: center;
+        }
+        .slideDots .dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: #30363d; cursor: pointer; transition: background 0.15s;
+        }
+        .slideDots .dot.active { background: #56d364; }
+        .slide { animation: fadeIn 0.25s ease-out; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateX(8px); }
+            to   { opacity: 1; transform: translateX(0); }
+        }
+        .slideNav {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-top: 16px;
+        }
+        .slideNav button { margin: 0; }
+        .panel h3 { margin: 16px 0 6px 0; color: #8b949e; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+        .panel p  { margin: 4px 0 12px 0; color: #8b949e; }
+        .panel input[type=text] {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            color: white;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 16px;
+            width: 220px;
+        }
+        .panel button {
+            background: #238636; color: white;
+            border: none;
+            padding: 8px 18px;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            margin: 4px;
+        }
+        .panel button:hover { background: #2ea043; }
+        .panel button:disabled { background: #30363d; cursor: not-allowed; color: #8b949e; }
+        .panel button.secondary { background: #21262d; }
+        .panel button.secondary:hover { background: #30363d; }
+        .panel button.danger { background: #a40e26; }
+        .panel button.danger:hover { background: #da3633; }
+
+        @keyframes pulse {
+            from { opacity: 0.7; transform: scale(1); }
+            to   { opacity: 1;   transform: scale(1.06); }
+        }
+
+        /* ---------- identity widgets (used in rooms panel) ---------- */
+        .identity-row {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            align-items: center;
+            flex-wrap: wrap;
+            margin: 8px 0 12px 0;
+        }
+
+        #avatarPicker {
+            display: flex;
+            gap: 6px;
+            justify-content: center;
+            flex-wrap: wrap;
+            max-width: 320px;
+        }
+        #avatarPicker .preset {
+            width: 36px; height: 36px;
+            display: flex; align-items: center; justify-content: center;
+            background: #0d1117;
+            border: 2px solid #30363d;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 22px; line-height: 1;
+            user-select: none;
+        }
+        #avatarPicker .preset.selected { border-color: #56d364; }
+        #avatarPicker .preset:hover { background: #1a1f26; }
+        #avatarCustom {
+            width: 64px;
+            text-align: center;
+            font-size: 18px;
+            padding: 4px 4px;
+        }
+
+        /* ---------- skin picker ---------- */
+        #skinPicker {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            margin: 8px 0 12px 0;
+        }
+        #skinColors {
+            display: flex; flex-wrap: wrap; gap: 6px; justify-content: center;
+            max-width: 320px;
+        }
+        #skinColors .swatch {
+            width: 28px; height: 28px;
+            border-radius: 50%;
+            border: 2px solid #30363d;
+            cursor: pointer;
+        }
+        #skinColors .swatch.selected { border-color: #ffffff; transform: scale(1.1); }
+        #skinCustomColor {
+            width: 32px; height: 32px;
+            border: none; background: none; padding: 0;
+            cursor: pointer;
+        }
+        #skinPatterns { display: flex; gap: 6px; }
+        #skinPatterns button {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            margin: 0;
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        #skinPatterns button.selected { border-color: #56d364; color: white; }
+
+        #skinPreview {
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            background: #0d1117;
+        }
+
+        /* ---------- room list ---------- */
+        #roomList {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin: 8px 0;
+            text-align: left;
+        }
+        #roomList .room {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            background: #0d1117;
+            border-radius: 6px;
+            gap: 12px;
+        }
+        #roomList .room .meta { color: #8b949e; font-size: 12px; }
+        #roomList .room button { margin: 0; padding: 6px 14px; }
+        #roomList .empty { color: #8b949e; font-style: italic; padding: 8px; }
+
+        #createRoomRow {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+            align-items: center;
+            margin-top: 8px;
+        }
+        #createRoomRow input { width: 180px; }
+
+        /* ---------- lobby ---------- */
+        #lobbyHeader {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+        #lobbyHeader h2 { margin: 0; }
+        #lobbyHeader .badge { color: #8b949e; font-size: 12px; }
+        #lobbyPlayers {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin: 8px 0 14px 0;
+            text-align: left;
+        }
+        #lobbyPlayers .player {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            background: #0d1117;
+            border-radius: 6px;
+        }
+        #lobbyPlayers .swatch { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
+        #lobbyPlayers .av { font-size: 18px; width: 22px; text-align: center; }
+        #lobbyPlayers .nm { flex: 1; }
+        #lobbyPlayers .nm.me { color: #56d364; font-weight: bold; }
+        #lobbyPlayers .owner { color: #d29922; font-size: 12px; }
+        #lobbyPlayers .ready { color: #56d364; font-size: 12px; }
+        #lobbyPlayers .notReady { color: #8b949e; font-size: 12px; }
+        #lobbyButtons { display: flex; gap: 8px; justify-content: center; }
+        #lobbyStatus {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #8b949e;
+            min-height: 16px;
+        }
+
+        /* Map cards */
+        #mapSelector {
+            margin: 10px 0 14px 0;
+            text-align: left;
+        }
+        #mapSelector .mapHeader {
+            color: #8b949e;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 6px;
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+        }
+        #mapSelector .mapHeader .hint { text-transform: none; letter-spacing: 0; font-size: 11px; color: #8b949e; }
+        #mapGrid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .mapCard {
+            background: #0d1117;
+            border: 2px solid #30363d;
+            border-radius: 8px;
+            padding: 10px 12px;
+            cursor: pointer;
+            transition: background 0.15s, border-color 0.15s;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .mapCard.disabled { cursor: default; }
+        .mapCard:hover:not(.disabled) {
+            background: #161b22;
+            border-color: #58a6ff;
+        }
+        .mapCard.selected {
+            border-color: #56d364;
+            background: #1f2a1f;
+        }
+        .mapCard .row1 {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .mapCard .mIcon { font-size: 22px; line-height: 1; }
+        .mapCard .mName { font-weight: bold; font-size: 14px; flex: 1; }
+        .mapCard .mCheck { color: #56d364; font-size: 14px; }
+        .mapCard .mDesc { font-size: 11px; color: #8b949e; line-height: 1.3; }
+        .mapCard .mStats { font-size: 11px; color: #8b949e; }
+        .mapCard .mPalette {
+            display: flex;
+            gap: 1px;
+            height: 6px;
+            margin-top: 2px;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .mapCard .mPalette div { flex: 1; }
+
+        /* ---------- standings (intermission) ---------- */
+        #standingsList {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin: 8px 0 16px 0;
+            text-align: left;
+        }
+        #standingsList .standing {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 6px 12px;
+            background: #0d1117;
+            border-radius: 6px;
+        }
+        #standingsList .standing.winner {
+            background: #1f2a1f;
+            border: 1px solid #56d364;
+        }
+        #standingsList .rank { width: 24px; color: #8b949e; text-align: right; }
+        #standingsList .av { width: 22px; text-align: center; font-size: 18px; }
+        #standingsList .nm { flex: 1; }
+        #standingsList .sc { font-variant-numeric: tabular-nums; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <span class="pill">Score: <span id="myScore">0</span></span>
+        <span class="pill" id="status">connecting...</span>
+        <span class="pill clickable" id="muteToggle" title="Mute / unmute sounds">🔊</span>
+        <span class="pill" id="boostHint" style="display:none">Hold SPACE to boost</span>
+    </div>
+
+    <div id="stage">
+        <canvas id="gameCanvas"></canvas>
+        <div id="sidebar">
+            <div id="roundPanel">
+                <div id="roundLabel">—</div>
+                <div id="roundTime">—</div>
+            </div>
+            <div id="leaderboard">
+                <h3>Leaderboard</h3>
+                <div id="leaderboardRows"></div>
+            </div>
+        </div>
+
+        <div id="overlay">
+            <!-- ROOMS PANEL -->
+            <div class="panel" id="roomsPanel">
+                <div class="slideHeader">
+                    <h2 id="slideTitle">Create Your Snake</h2>
+                    <div class="slideDots">
+                        <span class="dot active" data-slide="0"></span>
+                        <span class="dot"        data-slide="1"></span>
+                    </div>
+                </div>
+
+                <!-- ============ SLIDE 1: PROFILE ============ -->
+                <div class="slide" id="profileSlide">
+                    <h3>Your name</h3>
+                    <input id="nameInput" type="text" maxlength="16" placeholder="your name">
+
+                    <h3>Avatar</h3>
+                    <div class="identity-row">
+                        <div id="avatarPicker">
+                            <div class="preset" data-emoji="🐍">🐍</div>
+                            <div class="preset" data-emoji="🐉">🐉</div>
+                            <div class="preset" data-emoji="🦊">🦊</div>
+                            <div class="preset" data-emoji="🐺">🐺</div>
+                            <div class="preset" data-emoji="🦄">🦄</div>
+                            <div class="preset" data-emoji="🐙">🐙</div>
+                            <div class="preset" data-emoji="🦖">🦖</div>
+                            <div class="preset" data-emoji="👾">👾</div>
+                            <div class="preset" data-emoji="🔥">🔥</div>
+                            <div class="preset" data-emoji="⚡">⚡</div>
+                            <input id="avatarCustom" type="text" maxlength="4" placeholder="?">
+                        </div>
+                    </div>
+                    <div id="avatarImageRow">
+                        <input id="avatarImageFile" type="file" accept="image/*" style="display:none">
+                        <button id="avatarImageButton" type="button" class="secondary">Upload Photo</button>
+                        <button id="avatarImageClear" type="button" class="secondary" style="display:none">Use Emoji</button>
+                        <span id="avatarImageHint" style="color:#8b949e;font-size:11px;margin-left:6px">Auto-cropped to circle</span>
+                    </div>
+
+                    <h3>Snake skin</h3>
+                    <div id="skinPicker">
+                        <div id="skinColors"></div>
+                        <input id="skinCustomColor" type="color" value="#56d364">
+                        <div id="skinPatterns">
+                            <button data-pattern="solid">Solid</button>
+                            <button data-pattern="stripes">Stripes</button>
+                            <button data-pattern="rainbow">Rainbow</button>
+                        </div>
+                        <canvas id="skinPreview" width="200" height="36"></canvas>
+                    </div>
+
+                    <div class="slideNav">
+                        <button id="toRoomsButton">Continue to Rooms →</button>
+                    </div>
+                </div>
+
+                <!-- ============ SLIDE 2: ROOMS ============ -->
+                <div class="slide" id="roomsSlide" style="display:none">
+                    <p id="roomsError" style="color:#f85149;display:none"></p>
+
+                    <h3>Available Rooms</h3>
+                    <div id="roomList"></div>
+
+                    <h3>Create New Room</h3>
+                    <div id="createRoomRow">
+                        <input id="newRoomName" type="text" maxlength="24" placeholder="new room name">
+                        <button id="createRoomButton">Create Room</button>
+                    </div>
+
+                    <div class="slideNav">
+                        <button id="backToProfileButton" class="secondary">← Edit Profile</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- LOBBY PANEL -->
+            <div class="panel" id="lobbyPanel" style="display:none">
+                <div id="lobbyHeader">
+                    <h2 id="lobbyRoomName">Room</h2>
+                    <span class="badge"><span id="lobbyPlayerCount">0</span>/8 players</span>
+                </div>
+                <p id="lobbyError" style="color:#f85149;display:none"></p>
+                <div id="modeSelector">
+                    <div class="modeHeader">
+                        <span>Game Mode</span>
+                        <span class="hint" id="modeHint"></span>
+                    </div>
+                    <div id="modeGrid"></div>
+                </div>
+                <div id="mapSelector">
+                    <div class="mapHeader">
+                        <span>Map</span>
+                        <span class="hint" id="mapHint"></span>
+                    </div>
+                    <div id="mapGrid"></div>
+                </div>
+                <div id="lobbyPlayers"></div>
+                <div id="lobbyButtons">
+                    <button id="readyButton">Get Ready</button>
+                    <button id="startButton" style="display:none">Start Game</button>
+                    <button id="leaveLobbyButton" class="secondary">Leave Room</button>
+                </div>
+                <div id="lobbyStatus"></div>
+            </div>
+
+            <!-- DEATH PANEL (during playing) -->
+            <div class="panel" id="deathPanel" style="display:none">
+                <h2>You died</h2>
+                <p id="deathReason"></p>
+                <button id="respawnButton">Respawn</button>
+            </div>
+
+            <!-- INTERMISSION PANEL -->
+            <div class="panel" id="intermissionPanel" style="display:none">
+                <h2 id="intermissionTitle">Round over</h2>
+                <p id="intermissionSub">Returning to lobby...</p>
+                <div id="standingsList"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+const myScoreEl = document.getElementById("myScore");
+const statusEl = document.getElementById("status");
+const leaderboardRowsEl = document.getElementById("leaderboardRows");
+const leaderboardEl = document.getElementById("leaderboard");
+const roundLabelEl = document.getElementById("roundLabel");
+const roundTimeEl = document.getElementById("roundTime");
+
+const overlayEl = document.getElementById("overlay");
+const roomsPanelEl = document.getElementById("roomsPanel");
+const lobbyPanelEl = document.getElementById("lobbyPanel");
+const deathPanelEl = document.getElementById("deathPanel");
+const intermissionPanelEl = document.getElementById("intermissionPanel");
+
+const nameInput = document.getElementById("nameInput");
+const avatarPickerEl = document.getElementById("avatarPicker");
+const avatarCustomEl = document.getElementById("avatarCustom");
+const avatarImageFileEl = document.getElementById("avatarImageFile");
+const avatarImageButton = document.getElementById("avatarImageButton");
+const avatarImageClear = document.getElementById("avatarImageClear");
+const avatarImageHint = document.getElementById("avatarImageHint");
+const skinColorsEl = document.getElementById("skinColors");
+const skinCustomColorEl = document.getElementById("skinCustomColor");
+const skinPatternsEl = document.getElementById("skinPatterns");
+const skinPreviewEl = document.getElementById("skinPreview");
+
+const roomListEl = document.getElementById("roomList");
+const newRoomNameEl = document.getElementById("newRoomName");
+const createRoomButton = document.getElementById("createRoomButton");
+const roomsErrorEl = document.getElementById("roomsError");
+
+const lobbyRoomNameEl = document.getElementById("lobbyRoomName");
+const lobbyPlayerCountEl = document.getElementById("lobbyPlayerCount");
+const lobbyPlayersEl = document.getElementById("lobbyPlayers");
+const lobbyErrorEl = document.getElementById("lobbyError");
+const readyButton = document.getElementById("readyButton");
+const startButton = document.getElementById("startButton");
+const leaveLobbyButton = document.getElementById("leaveLobbyButton");
+const mapGridEl = document.getElementById("mapGrid");
+const mapHintEl = document.getElementById("mapHint");
+const lobbyStatusEl = document.getElementById("lobbyStatus");
+const modeGridEl = document.getElementById("modeGrid");
+const modeHintEl = document.getElementById("modeHint");
+const muteToggleEl = document.getElementById("muteToggle");
+const boostHintEl = document.getElementById("boostHint");
+const profileSlideEl = document.getElementById("profileSlide");
+const roomsSlideEl = document.getElementById("roomsSlide");
+const slideTitleEl = document.getElementById("slideTitle");
+const slideDotsEl = document.querySelector(".slideDots");
+const toRoomsButton = document.getElementById("toRoomsButton");
+const backToProfileButton = document.getElementById("backToProfileButton");
+
+function showSlide(idx) {
+    profileSlideEl.style.display = idx === 0 ? "" : "none";
+    roomsSlideEl.style.display   = idx === 1 ? "" : "none";
+    slideTitleEl.textContent = idx === 0 ? "Create Your Snake" : "Choose a Room";
+    for (const d of slideDotsEl.querySelectorAll(".dot")) {
+        d.classList.toggle("active", Number(d.dataset.slide) === idx);
+    }
+    if (idx === 1) send({ type: "listRooms" });
+}
+toRoomsButton.addEventListener("click", () => showSlide(1));
+backToProfileButton.addEventListener("click", () => showSlide(0));
+for (const d of slideDotsEl.querySelectorAll(".dot")) {
+    d.addEventListener("click", () => showSlide(Number(d.dataset.slide)));
+}
+
+const deathReasonEl = document.getElementById("deathReason");
+const respawnButton = document.getElementById("respawnButton");
+
+const intermissionTitleEl = document.getElementById("intermissionTitle");
+const intermissionSubEl = document.getElementById("intermissionSub");
+const standingsListEl = document.getElementById("standingsList");
+
+// ---------------- identity & local state ----------------
+const SAVED_NAME = localStorage.getItem("snakeName") || "";
+const SAVED_AVATAR = localStorage.getItem("snakeAvatar") || "🐍";
+const SAVED_COLOR = localStorage.getItem("snakeColor") || "#56d364";
+const SAVED_PATTERN = localStorage.getItem("snakePattern") || "solid";
+if (SAVED_NAME) nameInput.value = SAVED_NAME;
+
+let myId = null;
+let world = { width: 3000, height: 3000 };
+let mouse = { x: canvas.width / 2, y: 100 };
+
+let myName = SAVED_NAME;
+let myAvatar = SAVED_AVATAR;
+let selectedAvatar = SAVED_AVATAR;
+let myColor = SAVED_COLOR;
+let myPattern = SAVED_PATTERN;
+let myAvatarImage = localStorage.getItem("snakeAvatarImage") || null;  // data URL or null
+let isReady = false;
+
+// playerId -> HTMLImageElement; populated via 'playerImage' messages
+const playerImages = new Map();
+
+// ---------------- particles ----------------
+const particles = [];
+
+function spawnEatPuff(x, y, color) {
+    for (let i = 0; i < 7; i++) {
+        const ang = Math.random() * Math.PI * 2;
+        const sp = 1.5 + Math.random() * 2;
+        particles.push({
+            x, y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+            r: 1.5 + Math.random() * 1.5,
+            color, life: 0, maxLife: 22 + Math.random() * 10,
+        });
+    }
+}
+function spawnDeathBurst(snake) {
+    const n = Math.min(60, snake.body.length * 3);
+    for (let i = 0; i < n; i++) {
+        const seg = snake.body[Math.floor(Math.random() * snake.body.length)] || snake;
+        const ang = Math.random() * Math.PI * 2;
+        const sp = 2 + Math.random() * 4;
+        particles.push({
+            x: seg.x, y: seg.y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+            r: 2 + Math.random() * 3,
+            color: snake.color || '#7ee787', life: 0, maxLife: 40 + Math.random() * 30,
+        });
+    }
+}
+function updateParticles() {
+    for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx; p.y += p.vy;
+        p.vx *= 0.94; p.vy *= 0.94;
+        p.life++;
+        if (p.life >= p.maxLife) particles.splice(i, 1);
+    }
+}
+function drawParticles() {
+    for (const p of particles) {
+        const a = 1 - p.life / p.maxLife;
+        ctx.globalAlpha = a;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r * (0.4 + a * 0.6), 0, Math.PI * 2);
+        ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+}
+
+// ---------------- LSS safe zone ----------------
+function drawSafeZone() {
+    if (!safeZone) return;
+    const { cx, cy, r } = safeZone;
+    // 1. Dim red fill over the *dangerous* area (everywhere except inside the circle).
+    //    Use evenodd to punch the circle out of a big covering rect.
+    ctx.save();
+    ctx.fillStyle = 'rgba(180, 30, 30, 0.22)';
+    ctx.beginPath();
+    ctx.rect(-2000, -2000, world.width + 4000, world.height + 4000);
+    ctx.arc(cx, cy, r, 0, Math.PI * 2, true);
+    ctx.closePath();
+    ctx.fill('evenodd');
+    ctx.restore();
+
+    // 2. Pulsing red boundary ring with soft glow
+    const pulse = 0.65 + 0.35 * Math.sin(Date.now() / 240);
+    ctx.save();
+    ctx.shadowColor = '#f85149';
+    ctx.shadowBlur = 18;
+    ctx.strokeStyle = `rgba(248, 81, 73, ${pulse})`;
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+}
+
+// ---------------- sound (Web Audio, generated) ----------------
+let audioCtx = null;
+let audioMuted = localStorage.getItem("snakeMuted") === "1";
+let boostNode = null;
+
+function ensureAudio() {
+    if (audioMuted) return null;
+    if (!audioCtx) {
+        try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+        catch { return null; }
+    }
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    return audioCtx;
+}
+function tone(freq, dur, type = 'sine', vol = 0.2, delay = 0) {
+    const ac = ensureAudio();
+    if (!ac) return;
+    const t0 = ac.currentTime + delay;
+    const osc = ac.createOscillator();
+    const g = ac.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+    g.gain.setValueAtTime(vol, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(g); g.connect(ac.destination);
+    osc.start(t0); osc.stop(t0 + dur);
+}
+function sndEat()      { tone(820, 0.07, 'square', 0.12); tone(1240, 0.06, 'square', 0.10, 0.03); }
+function sndPowerup()  { tone(560, 0.07, 'sine', 0.18); tone(820, 0.07, 'sine', 0.18, 0.05); tone(1180, 0.10, 'sine', 0.20, 0.10); }
+function sndDie()      { tone(180, 0.4, 'sawtooth', 0.22); tone(90, 0.4, 'sawtooth', 0.18, 0.08); }
+function sndCountdown(){ tone(1600, 0.04, 'square', 0.14); }
+function sndStart()    { tone(440, 0.08, 'triangle', 0.18); tone(660, 0.08, 'triangle', 0.18, 0.08); tone(880, 0.12, 'triangle', 0.2, 0.16); }
+function startBoostHum() {
+    const ac = ensureAudio();
+    if (!ac || boostNode) return;
+    const osc = ac.createOscillator();
+    const g = ac.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.value = 80;
+    g.gain.setValueAtTime(0, ac.currentTime);
+    g.gain.linearRampToValueAtTime(0.06, ac.currentTime + 0.05);
+    osc.connect(g); g.connect(ac.destination);
+    osc.start();
+    boostNode = { osc, g };
+}
+function stopBoostHum() {
+    if (!boostNode || !audioCtx) return;
+    const { osc, g } = boostNode;
+    const t = audioCtx.currentTime;
+    g.gain.cancelScheduledValues(t);
+    g.gain.setValueAtTime(g.gain.value, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
+    osc.stop(t + 0.12);
+    boostNode = null;
+}
+
+// ---------------- boost input ----------------
+function setBoost(v) {
+    if (myBoost === v) return;
+    myBoost = v;
+    send({ type: "setBoost", boosting: v });
+    if (v) startBoostHum(); else stopBoostHum();
+}
+
+// ---------------- mute toggle (deferred until audioMuted is initialized) ----------------
+muteToggleEl.textContent = audioMuted ? "🔇" : "🔊";
+muteToggleEl.addEventListener("click", () => {
+    audioMuted = !audioMuted;
+    localStorage.setItem("snakeMuted", audioMuted ? "1" : "0");
+    muteToggleEl.textContent = audioMuted ? "🔇" : "🔊";
+    if (audioMuted) stopBoostHum();
+});
+
+let roomList = [];
+let currentRoom = null;          // { id, name, ownerId } | null
+let lobbyPlayers = [];           // populated during lobby phase
+let phase = "none";              // "none" | "lobby" | "playing" | "intermission"
+let phaseEndsAt = 0;
+let roundNumber = 0;
+let currentMode = "ffa";         // "ffa" | "lastman" | "teams"
+let myBoost = false;
+let myEffects = { goldRemain: 0, shieldRemain: 0, speedRemain: 0, magnetRemain: 0 };
+let meEliminated = false;
+let prevMyScore = 0;
+let prevFoodIds = new Set();
+let safeZone = null;   // { cx, cy, r } in LSS mode, else null
+
+const MODES_LIST = [
+    { id: 'ffa',     name: 'Free for All',        icon: '⚔️', description: 'Eat food, eat rivals. Highest score wins.' },
+    { id: 'lastman', name: 'Last Snake Standing', icon: '💀', description: 'One death and you\'re out. Last alive wins.' },
+    { id: 'teams',   name: 'Teams (Red vs Blue)', icon: '🚩', description: 'Auto-assigned. No friendly fire. Team score totals.' },
+];
+
+let renderSnakes = [];
+let targetSnakes = [];
+let foodList = [];
+let leaderboard = [];
+let standings = null;
+let isDead = false;
+let lastDeathReason = "wall";
+let lastDeathScore = 0;
+
+let ws = null;
+
+const COLOR_PALETTE = ['#56d364', '#f0883e', '#a371f7', '#58a6ff', '#f85149', '#d29922', '#ec4899', '#06b6d4', '#facc15', '#34d399', '#fb7185', '#a3e635'];
+
+const THEMES = {
+    grasslands: {
+        base: "#2c4a2c", patchDark: "#26412a", patchLight: "#365a37", patchBright: "#3f6b40",
+        bladeDark: "#234722", bladeLight: "#4d7a4a",
+        clumpShadow: "rgba(0,0,0,0.18)", clumpDark: "#1f3e1e", clumpLight: "#5b8e58",
+        pebbleBase: 108,
+    },
+    desert: {
+        base: "#c4a86c", patchDark: "#a08850", patchLight: "#d4b878", patchBright: "#e8cf98",
+        bladeDark: "#8a6e3c", bladeLight: "#b89860",
+        clumpShadow: "rgba(60,40,15,0.22)", clumpDark: "#6a4f2b", clumpLight: "#8a7045",
+        pebbleBase: 150,
+    },
+    snow: {
+        base: "#dde3eb", patchDark: "#c2cad4", patchLight: "#ecf0f5", patchBright: "#ffffff",
+        bladeDark: "#9ba8b7", bladeLight: "#c5cfdb",
+        clumpShadow: "rgba(70,90,120,0.18)", clumpDark: "#7a8694", clumpLight: "#a9b4c0",
+        pebbleBase: 200,
+    },
+    lava: {
+        base: "#1a0808", patchDark: "#100404", patchLight: "#2a0e0a", patchBright: "#3d1410",
+        bladeDark: "#5a1a10", bladeLight: "#a02f1c",
+        clumpShadow: "rgba(0,0,0,0.4)", clumpDark: "#3a0c08", clumpLight: "#9a2a18",
+        pebbleBase: 60,
+    },
+};
+let currentTheme = THEMES.grasslands;
+let currentThemeId = 'grasslands';
+let availableMaps = [{ id: 'grasslands', name: 'Grasslands', theme: 'grasslands', size: 3000 }];
+
+function applyMap(mapInfo) {
+    if (!mapInfo) return;
+    currentThemeId = THEMES[mapInfo.theme] ? mapInfo.theme : 'grasslands';
+    currentTheme = THEMES[currentThemeId];
+    world = { width: mapInfo.size, height: mapInfo.size };
+}
+
+// ---------------- websocket ----------------
+function connect() {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(`${proto}//${location.host}`);
+    ws.onopen = () => {
+        statusEl.textContent = "connected";
+        sendIdentity();
+    };
+    ws.onclose = () => {
+        statusEl.textContent = "reconnecting...";
+        setTimeout(connect, 1000);
+    };
+    ws.onerror = () => { statusEl.textContent = "error"; };
+    ws.onmessage = handleMessage;
+}
+
+function sendIdentity() {
+    if (!ws || ws.readyState !== 1) return;
+    if (myName)   ws.send(JSON.stringify({ type: "setName", name: myName }));
+    if (myAvatar) ws.send(JSON.stringify({ type: "setAvatar", avatar: myAvatar }));
+    ws.send(JSON.stringify({ type: "setSkin", color: myColor, pattern: myPattern }));
+    if (myAvatarImage) ws.send(JSON.stringify({ type: "setAvatarImage", dataUrl: myAvatarImage }));
+}
+
+function send(msg) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); }
+
+function handleMessage(event) {
+    const msg = JSON.parse(event.data);
+    switch (msg.type) {
+        case "welcome":
+            myId = msg.id;
+            world = msg.world;
+            // Cache our own image locally so we render correctly even before any
+            // playerImage echo from the server.
+            if (myAvatarImage) {
+                const img = new Image();
+                img.onload = () => drawSkinPreview();
+                img.src = myAvatarImage;
+                playerImages.set(myId, img);
+            }
+            break;
+        case "playerImage":
+            if (msg.dataUrl) {
+                const img = new Image();
+                img.src = msg.dataUrl;
+                playerImages.set(msg.id, img);
+            } else {
+                playerImages.delete(msg.id);
+            }
+            break;
+        case "roomList":
+            roomList = msg.rooms;
+            if (!currentRoom) renderRoomList();
+            break;
+        case "joinedRoom":
+            currentRoom = { id: msg.roomId, ownerId: msg.ownerId, name: "" };
+            phase = "lobby";
+            isReady = false;
+            showScreen("lobby");
+            break;
+        case "leftRoom":
+            currentRoom = null;
+            lobbyPlayers = [];
+            phase = "none";
+            isDead = false;
+            if (msg.reason) showRoomsError(msg.reason);
+            showScreen("rooms");
+            break;
+        case "lobbyState":
+            currentRoom = msg.room;
+            lobbyPlayers = msg.players;
+            phase = msg.phase;
+            if (msg.availableMaps) availableMaps = msg.availableMaps;
+            applyMap(msg.map);
+            const meInLobby = lobbyPlayers.find(p => p.id === myId);
+            if (meInLobby) isReady = meInLobby.ready;
+            renderLobby();
+            if (currentScreen !== "lobby") showScreen("lobby");
+            break;
+        case "gameState": {
+            const prevPhase = phase;
+            const prevFood = foodList;
+            targetSnakes = msg.snakes;
+            foodList = msg.food;
+            leaderboard = msg.leaderboard;
+            phase = msg.phase;
+            phaseEndsAt = msg.phaseEndsAt;
+            roundNumber = msg.roundNumber;
+            standings = msg.standings;
+            currentRoom = msg.room;
+            if (msg.room && msg.room.mode) currentMode = msg.room.mode;
+            if (msg.myEffects) myEffects = msg.myEffects;
+            meEliminated = !!msg.meEliminated;
+            safeZone = msg.safeZone || null;
+            applyMap(msg.map);
+
+            // Eat detection: foods that disappeared near our snake = we ate them
+            const mySnake = msg.snakes.find(s => s.id === myId);
+            if (mySnake && prevFood && foodList) {
+                const currentIds = new Set(foodList.map(f => f.id));
+                for (const f of prevFood) {
+                    if (currentIds.has(f.id)) continue;
+                    const dx = f.x - mySnake.x, dy = f.y - mySnake.y;
+                    if (dx * dx + dy * dy < 40 * 40) {
+                        spawnEatPuff(f.x, f.y, f.color || '#ff7b72');
+                        if (f.type && f.type !== 'regular') {
+                            sndPowerup();
+                            spawnEatPuff(f.x, f.y, powerupColor(f.type));
+                            spawnEatPuff(f.x, f.y, '#ffffff');
+                        } else {
+                            sndEat();
+                        }
+                    }
+                }
+            }
+            const me = leaderboard.find(p => p.id === myId);
+            myScoreEl.textContent = me ? me.score : 0;
+
+            if (phase !== prevPhase) {
+                if (phase === "intermission") {
+                    isDead = false;
+                    showScreen("intermission");
+                } else if (phase === "playing" && prevPhase !== "playing") {
+                    isDead = false;
+                    showScreen("none");
+                }
+            }
+            if (phase === "playing" && isDead && me && me.alive) {
+                isDead = false;
+                showScreen("none");
+            }
+            break;
+        }
+        case "died":
+            if (phase === "playing") {
+                isDead = true;
+                lastDeathReason = msg.reason;
+                lastDeathScore = msg.finalScore;
+                meEliminated = !!msg.eliminated;
+                // Death explosion at our snake's last known position
+                const me = renderSnakes.find(s => s.id === myId);
+                if (me) spawnDeathBurst(me);
+                sndDie();
+                setBoost(false);  // stop boost on death
+                showDeathPanel();
+            }
+            break;
+        case "error":
+            if (currentScreen === "lobby") showLobbyError(msg.message);
+            else                          showRoomsError(msg.message);
+            break;
+    }
+}
+
+// ---------------- screen state machine ----------------
+let currentScreen = "rooms";
+
+function showScreen(name) {
+    currentScreen = name;
+    roomsPanelEl.style.display       = name === "rooms"        ? "" : "none";
+    lobbyPanelEl.style.display       = name === "lobby"        ? "" : "none";
+    deathPanelEl.style.display       = name === "death"        ? "" : "none";
+    intermissionPanelEl.style.display= name === "intermission" ? "" : "none";
+    if (name === "none") overlayEl.classList.add("hidden");
+    else                 overlayEl.classList.remove("hidden");
+    if (name === "rooms") {
+        send({ type: "listRooms" });
+        // Returning users (saved name) start on the rooms slide; first-timers start on profile.
+        showSlide(SAVED_NAME ? 1 : 0);
+    }
+}
+
+function showRoomsError(msg) {
+    roomsErrorEl.textContent = msg;
+    roomsErrorEl.style.display = "";
+    setTimeout(() => { roomsErrorEl.style.display = "none"; }, 4000);
+}
+function showLobbyError(msg) {
+    lobbyErrorEl.textContent = msg;
+    lobbyErrorEl.style.display = "";
+    setTimeout(() => { lobbyErrorEl.style.display = "none"; }, 4000);
+}
+
+// ---------------- rooms panel ----------------
+function renderRoomList() {
+    if (!roomList.length) {
+        roomListEl.innerHTML = `<div class="empty">No active rooms. Create one!</div>`;
+        return;
+    }
+    roomListEl.innerHTML = roomList.map(r => {
+        const joinable = r.phase === 'lobby' && r.playerCount < r.maxPlayers;
+        const status = r.phase === 'lobby' ? 'lobby' : r.phase === 'playing' ? 'playing' : 'between rounds';
+        const btn = joinable
+            ? `<button data-room-id="${r.id}" class="joinBtn">Join</button>`
+            : `<button disabled>${r.phase === 'lobby' ? 'Full' : 'In game'}</button>`;
+        return `<div class="room">
+            <div>
+                <div>${escapeHtml(r.name)}</div>
+                <div class="meta">${r.playerCount}/${r.maxPlayers} &bull; ${status}</div>
+            </div>
+            ${btn}
+        </div>`;
+    }).join("");
+    for (const b of roomListEl.querySelectorAll(".joinBtn")) {
+        b.addEventListener("click", () => {
+            commitIdentity();
+            send({ type: "joinRoom", roomId: b.dataset.roomId });
+        });
+    }
+}
+
+createRoomButton.addEventListener("click", () => {
+    commitIdentity();
+    const name = newRoomNameEl.value.trim();
+    send({ type: "createRoom", name });
+    newRoomNameEl.value = "";
+});
+
+nameInput.addEventListener("input", () => {
+    myName = nameInput.value.trim() || "anon";
+    localStorage.setItem("snakeName", myName);
+    if (ws && ws.readyState === 1) send({ type: "setName", name: myName });
+});
+
+function commitIdentity() {
+    myName = nameInput.value.trim() || "anon";
+    localStorage.setItem("snakeName", myName);
+    localStorage.setItem("snakeAvatar", myAvatar);
+    localStorage.setItem("snakeColor", myColor);
+    localStorage.setItem("snakePattern", myPattern);
+    sendIdentity();
+}
+
+// avatar picker
+function selectAvatar(emoji) {
+    selectedAvatar = emoji;
+    myAvatar = emoji;
+    avatarCustomEl.value = "";
+    for (const el of avatarPickerEl.querySelectorAll(".preset")) {
+        el.classList.toggle("selected", el.dataset.emoji === emoji);
+    }
+    localStorage.setItem("snakeAvatar", emoji);
+    if (ws && ws.readyState === 1) send({ type: "setAvatar", avatar: emoji });
+    drawSkinPreview();
+}
+for (const el of avatarPickerEl.querySelectorAll(".preset")) {
+    el.addEventListener("click", () => selectAvatar(el.dataset.emoji));
+}
+avatarCustomEl.addEventListener("input", () => {
+    const val = avatarCustomEl.value.trim();
+    if (val) {
+        selectedAvatar = val;
+        myAvatar = val;
+        for (const el of avatarPickerEl.querySelectorAll(".preset")) el.classList.remove("selected");
+        localStorage.setItem("snakeAvatar", val);
+        if (ws && ws.readyState === 1) send({ type: "setAvatar", avatar: val });
+        drawSkinPreview();
+    }
+});
+selectAvatar(SAVED_AVATAR);
+
+// --- Avatar photo upload ---
+avatarImageButton.addEventListener("click", () => avatarImageFileEl.click());
+avatarImageFileEl.addEventListener("change", async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    try {
+        const dataUrl = await cropAvatarImage(file);
+        setMyAvatarImage(dataUrl);
+        avatarImageHint.textContent = "Uploaded ✓";
+    } catch (err) {
+        avatarImageHint.textContent = "Couldn't read image";
+        avatarImageHint.style.color = "#f85149";
+        console.warn(err);
+    }
+    avatarImageFileEl.value = "";  // allow re-upload of same file
+});
+avatarImageClear.addEventListener("click", () => setMyAvatarImage(null));
+
+function setMyAvatarImage(dataUrl) {
+    myAvatarImage = dataUrl;
+    if (dataUrl) {
+        localStorage.setItem("snakeAvatarImage", dataUrl);
+        avatarImageClear.style.display = "";
+    } else {
+        localStorage.removeItem("snakeAvatarImage");
+        avatarImageClear.style.display = "none";
+        avatarImageHint.textContent = "Auto-cropped to circle";
+        avatarImageHint.style.color = "#8b949e";
+    }
+    if (myId != null) {
+        if (dataUrl) {
+            const img = new Image();
+            img.onload = () => { drawSkinPreview(); };
+            img.src = dataUrl;
+            playerImages.set(myId, img);
+        } else {
+            playerImages.delete(myId);
+        }
+    }
+    if (ws && ws.readyState === 1) send({ type: "setAvatarImage", dataUrl });
+    drawSkinPreview();
+}
+
+// Center-crop incoming image to a square, resize to 96×96, JPEG-encode.
+// 96×96 JPEG @ 0.82 is ~3-6 KB, well inside the server's 32KB cap.
+async function cropAvatarImage(file) {
+    if (file.size > 8 * 1024 * 1024) throw new Error("Image too large (>8MB)");
+    const dataUrl = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = () => reject(new Error("FileReader failed"));
+        r.readAsDataURL(file);
+    });
+    const img = await new Promise((resolve, reject) => {
+        const i = new Image();
+        i.onload = () => resolve(i);
+        i.onerror = () => reject(new Error("Image load failed"));
+        i.src = dataUrl;
+    });
+    const size = Math.min(img.width, img.height);
+    const sx = (img.width - size) / 2;
+    const sy = (img.height - size) / 2;
+    const out = document.createElement("canvas");
+    out.width = 96; out.height = 96;
+    const o = out.getContext("2d");
+    o.drawImage(img, sx, sy, size, size, 0, 0, 96, 96);
+    return out.toDataURL("image/jpeg", 0.82);
+}
+
+// Restore saved image on load (preview only; sent on welcome when myId is known).
+if (myAvatarImage) {
+    avatarImageClear.style.display = "";
+    avatarImageHint.textContent = "Uploaded ✓";
+}
+
+// skin colors
+skinColorsEl.innerHTML = COLOR_PALETTE.map(c =>
+    `<div class="swatch" data-c="${c}" style="background:${c}"></div>`
+).join("");
+function selectColor(c) {
+    myColor = c;
+    localStorage.setItem("snakeColor", c);
+    skinCustomColorEl.value = c;
+    for (const el of skinColorsEl.querySelectorAll(".swatch")) {
+        el.classList.toggle("selected", el.dataset.c === c);
+    }
+    if (ws && ws.readyState === 1) send({ type: "setSkin", color: myColor, pattern: myPattern });
+    drawSkinPreview();
+}
+for (const el of skinColorsEl.querySelectorAll(".swatch")) {
+    el.addEventListener("click", () => selectColor(el.dataset.c));
+}
+skinCustomColorEl.addEventListener("input", () => {
+    myColor = skinCustomColorEl.value;
+    localStorage.setItem("snakeColor", myColor);
+    for (const el of skinColorsEl.querySelectorAll(".swatch")) el.classList.remove("selected");
+    if (ws && ws.readyState === 1) send({ type: "setSkin", color: myColor, pattern: myPattern });
+    drawSkinPreview();
+});
+selectColor(SAVED_COLOR);
+
+// skin patterns
+function selectPattern(p) {
+    myPattern = p;
+    localStorage.setItem("snakePattern", p);
+    for (const b of skinPatternsEl.querySelectorAll("button")) {
+        b.classList.toggle("selected", b.dataset.pattern === p);
+    }
+    if (ws && ws.readyState === 1) send({ type: "setSkin", color: myColor, pattern: myPattern });
+    drawSkinPreview();
+}
+for (const b of skinPatternsEl.querySelectorAll("button")) {
+    b.addEventListener("click", () => selectPattern(b.dataset.pattern));
+}
+selectPattern(SAVED_PATTERN);
+
+function drawSkinPreview() {
+    const pctx = skinPreviewEl.getContext("2d");
+    pctx.clearRect(0, 0, skinPreviewEl.width, skinPreviewEl.height);
+    const total = 13;
+    const cy = skinPreviewEl.height / 2;
+    const HEAD_R = 10;
+    const SEG_STEP = 12;
+    const HEAD_X = 14;
+    for (let i = total - 1; i >= 0; i--) {
+        const x = HEAD_X + i * SEG_STEP;
+        const taper = (total - i) / total;
+        const r = Math.max(7 * Math.sin(taper * Math.PI / 2), 1.5);
+        pctx.beginPath();
+        pctx.arc(x, cy, r, 0, Math.PI * 2);
+        pctx.fillStyle = segmentColorRaw(myColor, myPattern, i, total);
+        pctx.fill();
+    }
+    // head
+    pctx.beginPath();
+    pctx.arc(HEAD_X, cy, HEAD_R, 0, Math.PI * 2);
+    pctx.fillStyle = shade(myColor, 10);
+    pctx.fill();
+    const previewImg = myId != null ? playerImages.get(myId) : null;
+    if (previewImg && previewImg.complete && previewImg.naturalWidth > 0) {
+        pctx.save();
+        pctx.beginPath(); pctx.arc(HEAD_X, cy, HEAD_R - 0.5, 0, Math.PI * 2); pctx.clip();
+        pctx.drawImage(previewImg, HEAD_X - HEAD_R, cy - HEAD_R, HEAD_R * 2, HEAD_R * 2);
+        pctx.restore();
+    } else if (myAvatar) {
+        pctx.save();
+        pctx.beginPath(); pctx.arc(HEAD_X, cy, HEAD_R, 0, Math.PI * 2); pctx.clip();
+        pctx.font = "14px sans-serif";
+        pctx.textAlign = "center";
+        pctx.textBaseline = "middle";
+        pctx.fillText(myAvatar, HEAD_X, cy + 1);
+        pctx.restore();
+    }
+}
+
+// ---------------- lobby panel ----------------
+function renderLobby() {
+    if (!currentRoom) return;
+    lobbyRoomNameEl.textContent = currentRoom.name || "Room";
+    lobbyPlayerCountEl.textContent = lobbyPlayers.length;
+
+    const amOwnerLobby = currentRoom.ownerId === myId;
+
+    // Mode cards
+    modeHintEl.textContent = amOwnerLobby ? "Click a mode" : "Chosen by room owner";
+    const currentModeId = (currentRoom.mode || 'ffa');
+    modeGridEl.innerHTML = MODES_LIST.map(m => {
+        const selected = m.id === currentModeId;
+        return `<div class="modeCard${selected ? ' selected' : ''}${amOwnerLobby ? '' : ' disabled'}" data-mode-id="${m.id}">
+            <div class="mIcon">${m.icon}</div>
+            <div class="mName">${escapeHtml(m.name)}</div>
+            <div class="mDesc">${escapeHtml(m.description)}</div>
+        </div>`;
+    }).join("");
+    if (amOwnerLobby) {
+        for (const card of modeGridEl.querySelectorAll(".modeCard")) {
+            card.addEventListener("click", () => {
+                if (card.dataset.modeId !== currentModeId) {
+                    send({ type: "setMode", mode: card.dataset.modeId });
+                }
+            });
+        }
+    }
+
+    // Map cards — owner clickable, others read-only with same highlight
+    mapHintEl.textContent = amOwnerLobby ? "Click a map to choose" : "Chosen by room owner";
+    mapGridEl.innerHTML = availableMaps.map(m => {
+        const theme = THEMES[m.theme] || THEMES.grasslands;
+        const selected = m.id === currentRoom.mapId;
+        const palette = [theme.patchDark, theme.base, theme.patchLight, theme.patchBright, theme.bladeLight]
+            .map(c => `<div style="background:${c}"></div>`).join("");
+        return `<div class="mapCard${selected ? " selected" : ""}${amOwnerLobby ? "" : " disabled"}" data-map-id="${m.id}">
+            <div class="row1">
+                <span class="mIcon">${m.icon || "🗺️"}</span>
+                <span class="mName">${escapeHtml(m.name)}</span>
+                ${selected ? '<span class="mCheck">✓</span>' : ''}
+            </div>
+            <div class="mDesc">${escapeHtml(m.description || "")}</div>
+            <div class="mStats">${m.size}² &bull; ${m.foodCount} food</div>
+            <div class="mPalette">${palette}</div>
+        </div>`;
+    }).join("");
+    if (amOwnerLobby) {
+        for (const card of mapGridEl.querySelectorAll(".mapCard")) {
+            card.addEventListener("click", () => {
+                if (card.dataset.mapId !== currentRoom.mapId) {
+                    send({ type: "setMap", mapId: card.dataset.mapId });
+                }
+            });
+        }
+    }
+    lobbyPlayersEl.innerHTML = lobbyPlayers.map(p => {
+        const isMe = p.id === myId;
+        const ownerTag = p.isOwner ? `<span class="owner">👑 OWNER</span>` : "";
+        const readyTag = p.ready
+            ? `<span class="ready">✅ Ready</span>`
+            : `<span class="notReady">⬜ Not ready</span>`;
+        return `<div class="player">
+            <div class="swatch" style="background:${p.color}"></div>
+            <div class="av">${escapeHtml(p.avatar || '')}</div>
+            <div class="nm ${isMe ? 'me' : ''}">${escapeHtml(p.name)}${isMe ? ' (you)' : ''}</div>
+            ${ownerTag}
+            ${readyTag}
+        </div>`;
+    }).join("");
+
+    readyButton.textContent = isReady ? "Cancel Ready" : "Get Ready";
+    readyButton.classList.toggle("secondary", isReady);
+
+    const amOwner = currentRoom.ownerId === myId;
+    startButton.style.display = amOwner ? "" : "none";
+    const readyCount = lobbyPlayers.filter(p => p.ready).length;
+    const allReady = lobbyPlayers.length > 0 && readyCount === lobbyPlayers.length;
+    startButton.disabled = !allReady;
+    startButton.textContent = allReady ? "Start Game" : `Waiting (${readyCount}/${lobbyPlayers.length})`;
+
+    // Status line everyone sees
+    if (lobbyPlayers.length <= 1) {
+        lobbyStatusEl.textContent = "Waiting for more players to join...";
+    } else if (allReady) {
+        lobbyStatusEl.textContent = amOwner
+            ? "All ready — press Start Game to begin"
+            : "All ready — waiting for the owner to start the game";
+    } else {
+        lobbyStatusEl.textContent = `${readyCount} of ${lobbyPlayers.length} players ready`;
+    }
+}
+
+readyButton.addEventListener("click", () => {
+    isReady = !isReady;
+    send({ type: "setReady", ready: isReady });
+});
+startButton.addEventListener("click", () => send({ type: "startGame" }));
+leaveLobbyButton.addEventListener("click", () => send({ type: "leaveRoom" }));
+
+// ---------------- death + intermission panels ----------------
+function showDeathPanel() {
+    const reasonText = lastDeathReason === 'wall' ? "Hit the wall."
+                     : lastDeathReason === 'zone' ? "Caught outside the shrinking zone!"
+                     : "Ran into another snake.";
+    deathReasonEl.textContent = `${reasonText} Final score: ${lastDeathScore}`;
+    showScreen("death");
+}
+respawnButton.addEventListener("click", () => {
+    send({ type: "respawn" });
+    showScreen("none");
+});
+
+function renderIntermission() {
+    if (!standings) return;
+    intermissionTitleEl.textContent = `Round ${roundNumber} over`;
+    const sec = Math.max(0, Math.ceil((phaseEndsAt - Date.now()) / 1000));
+    intermissionSubEl.textContent = `Returning to lobby in ${sec}s`;
+    standingsListEl.innerHTML = standings.map((s, i) => {
+        const cls = i === 0 ? "standing winner" : "standing";
+        return `<div class="${cls}">
+            <span class="rank">${i + 1}.</span>
+            <span class="av">${escapeHtml(s.avatar || "")}</span>
+            <span class="nm">${escapeHtml(s.name)}</span>
+            <span class="sc">${s.score}</span>
+        </div>`;
+    }).join("");
+}
+
+// ---------------- input ----------------
+canvas.addEventListener("mousemove", (event) => {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = event.clientX - rect.left;
+    mouse.y = event.clientY - rect.top;
+    mouse.set = true;
+});
+
+// Boost: hold Space, right-click, or two-finger touch
+window.addEventListener("keydown", (e) => {
+    if (e.code === "Space" && phase === "playing" && !isDead && !meEliminated) {
+        e.preventDefault();
+        setBoost(true);
+    }
+});
+window.addEventListener("keyup", (e) => {
+    if (e.code === "Space") { e.preventDefault(); setBoost(false); }
+});
+canvas.addEventListener("mousedown", (e) => {
+    if (e.button === 2 && phase === "playing" && !isDead && !meEliminated) setBoost(true);
+});
+canvas.addEventListener("mouseup",   (e) => { if (e.button === 2) setBoost(false); });
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+canvas.addEventListener("touchstart", (e) => {
+    if (e.touches.length >= 2 && phase === "playing" && !isDead && !meEliminated) setBoost(true);
+}, { passive: true });
+canvas.addEventListener("touchend",   () => setBoost(false), { passive: true });
+canvas.addEventListener("touchmove", (e) => {
+    if (e.touches.length >= 1 && phase === "playing") {
+        const rect = canvas.getBoundingClientRect();
+        const t = e.touches[0];
+        mouse.x = t.clientX - rect.left;
+        mouse.y = t.clientY - rect.top;
+        mouse.set = true;
+    }
+}, { passive: true });
+
+function me() { return renderSnakes.find(s => s.id === myId); }
+
+function cameraOffset() {
+    const m = me();
+    if (!m) return { x: world.width / 2 - canvas.width / 2, y: world.height / 2 - canvas.height / 2 };
+    return { x: m.x - canvas.width / 2, y: m.y - canvas.height / 2 };
+}
+
+setInterval(() => {
+    if (!ws || ws.readyState !== 1 || !me() || isDead || phase !== "playing") return;
+    const cam = cameraOffset();
+    send({ type: "input", x: mouse.x + cam.x, y: mouse.y + cam.y });
+}, 33);
+
+// ---------------- render loop ----------------
+function lerp(a, b, t) { return a + (b - a) * t; }
+function lerpAngle(a, b, t) {
+    let diff = b - a;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    return a + diff * t;
+}
+function ease(t) {
+    const byId = new Map(renderSnakes.map(s => [s.id, s]));
+    const next = [];
+    for (const ts of targetSnakes) {
+        const cs = byId.get(ts.id);
+        if (!cs) {
+            next.push({
+                id: ts.id, name: ts.name, avatar: ts.avatar,
+                color: ts.color, pattern: ts.pattern, score: ts.score,
+                x: ts.x, y: ts.y, angle: ts.angle,
+                body: ts.body.map(s => ({ x: s.x, y: s.y })),
+            });
+            continue;
+        }
+        cs.x = lerp(cs.x, ts.x, t);
+        cs.y = lerp(cs.y, ts.y, t);
+        cs.angle = lerpAngle(cs.angle, ts.angle, t);
+        while (cs.body.length < ts.body.length) {
+            const tail = cs.body[cs.body.length - 1] || { x: ts.x, y: ts.y };
+            cs.body.push({ x: tail.x, y: tail.y });
+        }
+        cs.body.length = ts.body.length;
+        for (let i = 0; i < ts.body.length; i++) {
+            cs.body[i].x = lerp(cs.body[i].x, ts.body[i].x, t);
+            cs.body[i].y = lerp(cs.body[i].y, ts.body[i].y, t);
+        }
+        cs.name = ts.name; cs.avatar = ts.avatar;
+        cs.color = ts.color; cs.pattern = ts.pattern;
+        cs.score = ts.score;
+        next.push(cs);
+    }
+    renderSnakes = next;
+}
+
+function render() {
+    ease(0.3);
+    ctx.fillStyle = "#161b22";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const cam = cameraOffset();
+    ctx.save();
+    ctx.translate(-cam.x, -cam.y);
+
+    drawTerrain(cam);
+    drawStoneWall();
+    for (const f of foodList) drawFood(f);
+    for (const s of renderSnakes) drawSnake(s, s.id === myId);
+    if (safeZone) drawSafeZone();
+    updateParticles();
+    drawParticles();
+
+    ctx.restore();
+
+    drawEffectBadges();
+    renderLeaderboard();
+    if (phase === "intermission") renderIntermission();
+    updateTimerDisplay();
+    requestAnimationFrame(render);
+}
+
+function updateTimerDisplay() {
+    let lastSec = null;
+    if (phase === "playing" && phaseEndsAt) {
+        const sec = Math.max(0, Math.ceil((phaseEndsAt - Date.now()) / 1000));
+        roundLabelEl.textContent = `Round ${roundNumber}`;
+        if (sec <= 30 && sec > 0) {
+            roundTimeEl.textContent = String(sec);
+            roundTimeEl.classList.add("urgent");
+        } else {
+            const m = Math.floor(sec / 60);
+            const s = sec % 60;
+            roundTimeEl.textContent = `${m}:${String(s).padStart(2, "0")}`;
+            roundTimeEl.classList.remove("urgent");
+        }
+        // Countdown tick sound for the last 5 seconds
+        if (sec <= 5 && sec > 0 && sec !== updateTimerDisplay._lastTick) {
+            updateTimerDisplay._lastTick = sec;
+            sndCountdown();
+        }
+    } else if (phase === "intermission") {
+        const sec = Math.max(0, Math.ceil((phaseEndsAt - Date.now()) / 1000));
+        roundLabelEl.textContent = "Intermission";
+        roundTimeEl.textContent = `${sec}s`;
+        roundTimeEl.classList.remove("urgent");
+        updateTimerDisplay._lastTick = null;
+    } else {
+        roundLabelEl.textContent = "—";
+        roundTimeEl.textContent = "—";
+        roundTimeEl.classList.remove("urgent");
+        updateTimerDisplay._lastTick = null;
+    }
+    // Boost hint pill: only visible during play, hidden once user has boosted once
+    if (phase === "playing" && !isDead && !meEliminated && !myBoost && !boostHintShown) {
+        boostHintEl.style.display = "";
+    } else {
+        boostHintEl.style.display = "none";
+        if (myBoost) boostHintShown = true;
+    }
+}
+let boostHintShown = false;
+
+function drawEffectBadges() {
+    if (phase !== "playing" || !myEffects) return;
+    const items = [
+        { key: 'goldRemain',   total: 10000, label: '★', color: '#facc15' },
+        { key: 'shieldRemain', total: 6000,  label: '✦', color: '#58a6ff' },
+        { key: 'speedRemain',  total: 5000,  label: '⚡', color: '#f0e84a' },
+        { key: 'magnetRemain', total: 8000,  label: '⌬', color: '#c084fc' },
+    ].filter(it => myEffects[it.key] > 0);
+    if (!items.length) return;
+
+    const x0 = canvas.width - 170;
+    let y = 220;  // below the sidebar
+    for (const it of items) {
+        // background
+        ctx.fillStyle = "rgba(13,17,23,0.85)";
+        ctx.fillRect(x0, y, 158, 30);
+        ctx.strokeStyle = it.color;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x0 + 0.5, y + 0.5, 157, 29);
+        // glyph
+        ctx.fillStyle = it.color;
+        ctx.font = "bold 18px Arial";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillText(it.label, x0 + 8, y + 15);
+        // remaining time text
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 12px Arial";
+        ctx.fillText(`${(myEffects[it.key] / 1000).toFixed(1)}s`, x0 + 30, y + 15);
+        // progress bar
+        const w = 110 * (myEffects[it.key] / it.total);
+        ctx.fillStyle = it.color;
+        ctx.fillRect(x0 + 70, y + 22, w, 4);
+        y += 36;
+    }
+    ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+}
+
+// ---------------- grasslands + walls + food + snake ----------------
+function hash(x, y) {
+    let h = (x * 374761393) ^ (y * 668265263);
+    h = (h ^ (h >>> 13)) >>> 0;
+    return (h * 1274126177) >>> 0;
+}
+function noise2d(x, y) {
+    const x0 = Math.floor(x), y0 = Math.floor(y);
+    const fx = x - x0, fy = y - y0;
+    const ex = fx * fx * (3 - 2 * fx);
+    const ey = fy * fy * (3 - 2 * fy);
+    const a = (hash(x0,     y0)     & 0xffffff) / 0xffffff;
+    const b = (hash(x0 + 1, y0)     & 0xffffff) / 0xffffff;
+    const c = (hash(x0,     y0 + 1) & 0xffffff) / 0xffffff;
+    const d = (hash(x0 + 1, y0 + 1) & 0xffffff) / 0xffffff;
+    return a * (1 - ex) * (1 - ey) + b * ex * (1 - ey)
+         + c * (1 - ex) * ey       + d * ex * ey;
+}
+
+// ---------- Terrain dispatcher ----------
+function drawTerrain(cam) {
+    switch (currentThemeId) {
+        case 'desert': drawDesertTerrain(cam); break;
+        case 'snow':   drawSnowTerrain(cam); break;
+        case 'lava':   drawLavaTerrain(cam); break;
+        default:       drawGrasslandsTerrain(cam);
+    }
+}
+
+// ---------- Shared terrain helpers ----------
+function fillBase(cam, color) {
+    const x0 = Math.max(0, cam.x);
+    const y0 = Math.max(0, cam.y);
+    const x1 = Math.min(world.width, cam.x + canvas.width);
+    const y1 = Math.min(world.height, cam.y + canvas.height);
+    if (x1 <= x0 || y1 <= y0) return false;
+    ctx.fillStyle = color;
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    return true;
+}
+function patchOverlay(cam, patch, colorPicker) {
+    const psx = Math.max(0, Math.floor(cam.x / patch) * patch);
+    const psy = Math.max(0, Math.floor(cam.y / patch) * patch);
+    const pex = Math.min(world.width, cam.x + canvas.width + patch);
+    const pey = Math.min(world.height, cam.y + canvas.height + patch);
+    for (let py = psy; py < pey; py += patch) {
+        for (let px = psx; px < pex; px += patch) {
+            const c = colorPicker(noise2d(px * 0.018, py * 0.018));
+            if (c) { ctx.fillStyle = c; ctx.fillRect(px, py, patch, patch); }
+        }
+    }
+}
+function forEachCell(cam, cell, callback) {
+    const sx = Math.max(0, Math.floor(cam.x / cell) * cell);
+    const sy = Math.max(0, Math.floor(cam.y / cell) * cell);
+    const ex = Math.min(world.width, cam.x + canvas.width + cell);
+    const ey = Math.min(world.height, cam.y + canvas.height + cell);
+    for (let cy = sy; cy < ey; cy += cell) {
+        for (let cx = sx; cx < ex; cx += cell) {
+            callback(cx, cy, hash(cx, cy));
+        }
+    }
+}
+
+// ---------- Theme 1: GRASSLANDS ----------
+function drawGrasslandsTerrain(cam) {
+    if (!fillBase(cam, currentTheme.base)) return;
+    patchOverlay(cam, 24, n => {
+        if (n < 0.30) return currentTheme.patchDark;
+        if (n > 0.82) return currentTheme.patchBright;
+        if (n > 0.65) return currentTheme.patchLight;
+        return null;
+    });
+    const cell = 28;
+    const blades = [], clumps = [], flowers = [], pebbles = [], dirts = [];
+    forEachCell(cam, cell, (cx, cy, h) => {
+        const kind = h & 0xff;
+        const px = cx + (((h >>> 8) & 0xff) / 255) * cell;
+        const py = cy + (((h >>> 16) & 0xff) / 255) * cell;
+        const bladeCount = 1 + Math.floor(noise2d(cx * 0.02, cy * 0.02) * 4);
+        for (let b = 0; b < bladeCount; b++) {
+            const hb = hash(cx + b * 17, cy + b * 23);
+            blades.push(cx + ((hb & 0xff) / 255) * cell, cy + (((hb >>> 8) & 0xff) / 255) * cell, hb);
+        }
+        if      (kind < 18) dirts.push(px, py, h);
+        else if (kind < 32) pebbles.push(px, py, h);
+        else if (kind < 52) flowers.push(px, py, h);
+        else if (kind < 96) clumps.push(px, py, h);
+    });
+    drawGrassDirts(dirts);
+    drawGrassClumps(clumps);
+    drawPebbles(pebbles, currentTheme.pebbleBase);
+    drawGrassBlades(blades);
+    drawGrassFlowers(flowers);
+}
+
+function drawGrassBlades(arr) {
+    ctx.lineCap = "round";
+    ctx.strokeStyle = currentTheme.bladeDark; ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const len = 3 + ((h >>> 8) & 0x3);
+        const lean = (((h >>> 12) & 0xf) / 15 - 0.5) * 3;
+        ctx.moveTo(x, y);
+        ctx.quadraticCurveTo(x + lean / 2, y - len / 2, x + lean, y - len);
+    }
+    ctx.stroke();
+    ctx.strokeStyle = currentTheme.bladeLight; ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const len = 2 + ((h >>> 8) & 0x3);
+        const lean = (((h >>> 12) & 0xf) / 15 - 0.5) * 3;
+        const offX = (((h >>> 16) & 0xf) / 15 - 0.5) * 1.5;
+        ctx.moveTo(x + offX, y);
+        ctx.quadraticCurveTo(x + offX + lean / 2, y - len / 2, x + offX + lean, y - len);
+    }
+    ctx.stroke();
+}
+function drawGrassClumps(arr) {
+    ctx.fillStyle = currentTheme.clumpShadow;
+    for (let i = 0; i < arr.length; i += 3) {
+        ctx.beginPath();
+        ctx.ellipse(arr[i], arr[i + 1] + 1, 5, 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    ctx.lineCap = "round";
+    ctx.strokeStyle = currentTheme.clumpDark; ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const n = 4 + (h & 3);
+        for (let j = 0; j < n; j++) {
+            const hj = hash(x + j * 7, y + j * 11);
+            const dx = ((hj & 0xf) / 15 - 0.5) * 6;
+            const len = 6 + ((hj >>> 4) & 5);
+            const lean = (((hj >>> 8) & 0xf) / 15 - 0.5) * 5;
+            ctx.moveTo(x + dx, y);
+            ctx.quadraticCurveTo(x + dx + lean / 2, y - len / 2, x + dx + lean, y - len);
+        }
+    }
+    ctx.stroke();
+    ctx.strokeStyle = currentTheme.clumpLight; ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const n = 3 + ((h >>> 4) & 2);
+        for (let j = 0; j < n; j++) {
+            const hj = hash(x + j * 13, y + j * 5);
+            const dx = ((hj & 0xf) / 15 - 0.5) * 5;
+            const len = 5 + ((hj >>> 4) & 4);
+            const lean = (((hj >>> 8) & 0xf) / 15 - 0.5) * 4;
+            ctx.moveTo(x + dx, y);
+            ctx.quadraticCurveTo(x + dx + lean / 2, y - len / 2, x + dx + lean, y - len);
+        }
+    }
+    ctx.stroke();
+}
+function drawGrassFlowers(arr) {
+    const palettes = [
+        ["#f4f7fa", "#f4d03f"], ["#f4d03f", "#946d0e"],
+        ["#d9b3ff", "#7d3c98"], ["#ff8a8a", "#a02020"],
+        ["#a5d8ff", "#3f6caa"],
+    ];
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const p = palettes[(h >>> 24) % palettes.length];
+        ctx.fillStyle = "rgba(0,0,0,0.18)";
+        ctx.beginPath(); ctx.ellipse(x, y + 0.5, 3.5, 1.4, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = p[0];
+        ctx.beginPath(); ctx.arc(x, y, 2.6, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = p[1];
+        ctx.beginPath(); ctx.arc(x, y, 1, 0, Math.PI * 2); ctx.fill();
+    }
+}
+function drawGrassDirts(arr) {
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const r = 5 + ((h >>> 24) & 3);
+        ctx.fillStyle = "rgba(96, 64, 38, 0.55)";
+        ctx.beginPath(); ctx.ellipse(x, y, r * 1.6, r * 1.1, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "rgba(60, 38, 22, 0.7)";
+        for (let j = 0; j < 3; j++) {
+            const hj = hash(x + j * 11, y + j * 13);
+            const ox = ((hj & 0xff) / 255 - 0.5) * r * 1.5;
+            const oy = (((hj >>> 8) & 0xff) / 255 - 0.5) * r * 0.8;
+            ctx.beginPath(); ctx.arc(x + ox, y + oy, 1, 0, Math.PI * 2); ctx.fill();
+        }
+    }
+}
+
+// shared pebble (used by grasslands + snow + desert variants)
+function drawPebbles(arr, base, hueRG = [-3, -8]) {
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const r = 1.8 + ((h >>> 24) & 3) * 0.4;
+        const g = base + ((h >>> 4) & 0x1f);
+        ctx.fillStyle = "rgba(0,0,0,0.25)";
+        ctx.beginPath(); ctx.ellipse(x, y + 1, r * 1.3, r * 0.6, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = `rgb(${g}, ${g + hueRG[0]}, ${g + hueRG[1]})`;
+        ctx.beginPath(); ctx.ellipse(x, y, r * 1.2, r * 0.8, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "rgba(255,255,255,0.18)";
+        ctx.beginPath(); ctx.ellipse(x - r * 0.3, y - r * 0.25, r * 0.5, r * 0.3, 0, 0, Math.PI * 2); ctx.fill();
+    }
+}
+
+// ---------- Theme 2: DESERT ----------
+function drawDesertTerrain(cam) {
+    if (!fillBase(cam, currentTheme.base)) return;
+    patchOverlay(cam, 28, n => {
+        if (n < 0.32) return currentTheme.patchDark;
+        if (n > 0.78) return currentTheme.patchBright;
+        if (n > 0.62) return currentTheme.patchLight;
+        return null;
+    });
+    drawSandRipples(cam);
+
+    const cell = 36;
+    const cacti = [], bushes = [], rocks = [], sands = [];
+    forEachCell(cam, cell, (cx, cy, h) => {
+        const kind = h & 0xff;
+        const px = cx + (((h >>> 8) & 0xff) / 255) * cell;
+        const py = cy + (((h >>> 16) & 0xff) / 255) * cell;
+        if      (kind < 18) sands.push(px, py, h);
+        else if (kind < 56) rocks.push(px, py, h);
+        else if (kind < 86) bushes.push(px, py, h);
+        else if (kind < 110) cacti.push(px, py, h);
+    });
+    drawSandPatches(sands);
+    drawDesertRocks(rocks);
+    drawCacti(cacti);
+    drawDriedBushes(bushes);
+}
+
+function drawSandRipples(cam) {
+    const cell = 70;
+    ctx.strokeStyle = "rgba(120, 95, 55, 0.35)";
+    ctx.lineWidth = 1.4;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    forEachCell(cam, cell, (cx, cy, h) => {
+        const ox = ((h & 0xff) / 255) * cell;
+        const oy = (((h >>> 8) & 0xff) / 255) * cell;
+        const len = 28 + ((h >>> 12) & 0xf);
+        const x = cx + ox, y = cy + oy;
+        const rot = (((h >>> 16) & 0xff) / 255 - 0.5) * 0.4;
+        ctx.moveTo(x - len / 2, y);
+        ctx.quadraticCurveTo(x, y - 4 + rot * 6, x + len / 2, y);
+    });
+    ctx.stroke();
+}
+function drawSandPatches(arr) {
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const r = 6 + ((h >>> 24) & 3);
+        ctx.fillStyle = "rgba(150, 120, 75, 0.4)";
+        ctx.beginPath(); ctx.ellipse(x, y, r * 1.8, r * 1.0, 0, 0, Math.PI * 2); ctx.fill();
+    }
+}
+function drawCacti(arr) {
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const tall = 14 + ((h >>> 4) & 0x7);
+        // ground shadow
+        ctx.fillStyle = "rgba(0,0,0,0.28)";
+        ctx.beginPath(); ctx.ellipse(x + 2, y + 1, 7, 2.4, 0, 0, Math.PI * 2); ctx.fill();
+        // dark outline
+        ctx.fillStyle = "#2a5328";
+        ctx.fillRect(x - 4, y - tall, 8, tall);
+        ctx.beginPath(); ctx.arc(x, y - tall, 4, 0, Math.PI * 2); ctx.fill();
+        // body
+        ctx.fillStyle = "#3a6b3a";
+        ctx.fillRect(x - 3, y - tall, 6, tall);
+        ctx.beginPath(); ctx.arc(x, y - tall, 3, 0, Math.PI * 2); ctx.fill();
+        // ribs
+        ctx.strokeStyle = "#2c5b2e"; ctx.lineWidth = 0.6;
+        ctx.beginPath();
+        ctx.moveTo(x - 1, y - tall + 1); ctx.lineTo(x - 1, y - 2);
+        ctx.moveTo(x + 1, y - tall + 1); ctx.lineTo(x + 1, y - 2);
+        ctx.stroke();
+        // 50% chance: one arm
+        if ((h >>> 8) & 1) {
+            const side = ((h >>> 9) & 1) ? -1 : 1;
+            const armY = y - tall * 0.55;
+            ctx.fillStyle = "#3a6b3a";
+            ctx.fillRect(x + side * 3, armY, side * 5, 4);
+            ctx.fillRect(x + side * 7, armY - 5, 4, 6);
+            ctx.beginPath(); ctx.arc(x + side * 9, armY - 5, 2, 0, Math.PI * 2); ctx.fill();
+        }
+    }
+}
+function drawDriedBushes(arr) {
+    // Tumbleweed-like radial twigs
+    ctx.strokeStyle = "#6a4a25";
+    ctx.lineWidth = 1.0;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        for (let j = 0; j < 7; j++) {
+            const ang = (j / 7) * Math.PI * 2 + (((h >>> j) & 1) ? 0.3 : 0);
+            const r = 3 + ((h >>> (j * 2)) & 3);
+            ctx.moveTo(x, y);
+            ctx.lineTo(x + Math.cos(ang) * r, y + Math.sin(ang) * r);
+        }
+    }
+    ctx.stroke();
+    // small darker accent dots in the center
+    ctx.fillStyle = "rgba(60,40,20,0.7)";
+    for (let i = 0; i < arr.length; i += 3) {
+        ctx.beginPath(); ctx.arc(arr[i], arr[i + 1], 0.8, 0, Math.PI * 2); ctx.fill();
+    }
+}
+function drawDesertRocks(arr) {
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const r = 2.6 + ((h >>> 24) & 3) * 0.7;
+        ctx.fillStyle = "rgba(0,0,0,0.3)";
+        ctx.beginPath(); ctx.ellipse(x + 1, y + 2, r * 1.5, r * 0.7, 0, 0, Math.PI * 2); ctx.fill();
+        const g = 160 + ((h >>> 4) & 0x1f);
+        ctx.fillStyle = `rgb(${g}, ${g - 25}, ${g - 55})`;
+        ctx.beginPath(); ctx.ellipse(x, y, r * 1.3, r * 0.9, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "rgba(255,240,200,0.25)";
+        ctx.beginPath(); ctx.ellipse(x - r * 0.3, y - r * 0.3, r * 0.5, r * 0.3, 0, 0, Math.PI * 2); ctx.fill();
+    }
+}
+
+// ---------- Theme 3: SNOW ----------
+function drawSnowTerrain(cam) {
+    if (!fillBase(cam, currentTheme.base)) return;
+    patchOverlay(cam, 32, n => {
+        if (n < 0.30) return currentTheme.patchDark;
+        if (n > 0.80) return currentTheme.patchBright;
+        if (n > 0.60) return currentTheme.patchLight;
+        return null;
+    });
+
+    const cell = 32;
+    const drifts = [], flakes = [], rocks = [], sparkles = [];
+    forEachCell(cam, cell, (cx, cy, h) => {
+        const kind = h & 0xff;
+        const px = cx + (((h >>> 8) & 0xff) / 255) * cell;
+        const py = cy + (((h >>> 16) & 0xff) / 255) * cell;
+        // scattered sparkles
+        const sparkN = 1 + ((h >>> 24) & 1);
+        for (let b = 0; b < sparkN; b++) {
+            const hb = hash(cx + b * 17, cy + b * 23);
+            sparkles.push(cx + ((hb & 0xff) / 255) * cell, cy + (((hb >>> 8) & 0xff) / 255) * cell);
+        }
+        if      (kind < 22) rocks.push(px, py, h);
+        else if (kind < 56) drifts.push(px, py, h);
+        else if (kind < 96) flakes.push(px, py, h);
+    });
+    drawSnowDrifts(drifts);
+    drawFrozenRocks(rocks);
+    drawSnowflakes(flakes);
+    drawSparkles(sparkles);
+}
+function drawSnowDrifts(arr) {
+    // soft shadow under drift
+    ctx.fillStyle = "rgba(100,130,180,0.18)";
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const w = 14 + ((h >>> 4) & 0x7);
+        ctx.beginPath(); ctx.ellipse(x, y + 2, w * 0.9, 3, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    // bright snow hump (top semicircle)
+    ctx.fillStyle = "#ffffff";
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const w = 14 + ((h >>> 4) & 0x7);
+        ctx.beginPath();
+        ctx.ellipse(x, y, w, 5, 0, Math.PI, Math.PI * 2);
+        ctx.lineTo(x - w, y);
+        ctx.closePath();
+        ctx.fill();
+    }
+    // subtle blue shading along bottom edge
+    ctx.fillStyle = "rgba(180,200,225,0.45)";
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const w = 14 + ((h >>> 4) & 0x7);
+        ctx.beginPath();
+        ctx.ellipse(x, y - 0.5, w * 0.8, 1.5, 0, 0, Math.PI);
+        ctx.fill();
+    }
+}
+function drawSnowflakes(arr) {
+    ctx.strokeStyle = "#dde9f5"; ctx.lineWidth = 0.8;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const r = 1.8 + ((h >>> 4) & 1);
+        for (let k = 0; k < 6; k++) {
+            const ang = (k / 6) * Math.PI * 2;
+            ctx.moveTo(x, y);
+            ctx.lineTo(x + Math.cos(ang) * r, y + Math.sin(ang) * r);
+        }
+    }
+    ctx.stroke();
+}
+function drawSparkles(arr) {
+    ctx.fillStyle = "rgba(255,255,255,0.65)";
+    for (let i = 0; i < arr.length; i += 2) {
+        ctx.fillRect(arr[i], arr[i + 1], 1, 1);
+    }
+}
+function drawFrozenRocks(arr) {
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const r = 3 + ((h >>> 24) & 3) * 0.5;
+        // shadow
+        ctx.fillStyle = "rgba(70,100,140,0.25)";
+        ctx.beginPath(); ctx.ellipse(x + 1, y + 2, r * 1.4, r * 0.6, 0, 0, Math.PI * 2); ctx.fill();
+        // rock body
+        ctx.fillStyle = "#5a6b80";
+        ctx.beginPath(); ctx.ellipse(x, y, r * 1.3, r * 0.9, 0, 0, Math.PI * 2); ctx.fill();
+        // snow cap on top
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.ellipse(x, y - r * 0.35, r * 1.0, r * 0.32, 0, Math.PI, Math.PI * 2);
+        ctx.closePath();
+        ctx.fill();
+    }
+}
+
+// ---------- Theme 4: LAVA ----------
+function drawLavaTerrain(cam) {
+    if (!fillBase(cam, currentTheme.base)) return;
+    patchOverlay(cam, 28, n => {
+        if (n < 0.30) return currentTheme.patchDark;
+        if (n > 0.80) return currentTheme.patchBright;
+        if (n > 0.62) return currentTheme.patchLight;
+        return null;
+    });
+
+    const cell = 34;
+    const pools = [], cracks = [], obsidian = [], embers = [];
+    forEachCell(cam, cell, (cx, cy, h) => {
+        const kind = h & 0xff;
+        const px = cx + (((h >>> 8) & 0xff) / 255) * cell;
+        const py = cy + (((h >>> 16) & 0xff) / 255) * cell;
+        if      (kind < 10) pools.push(px, py, h);
+        else if (kind < 40) cracks.push(px, py, h);
+        else if (kind < 75) obsidian.push(px, py, h);
+        else if (kind < 130) embers.push(px, py, h);
+    });
+    drawLavaPools(pools);
+    drawLavaCracks(cracks);
+    drawObsidianShards(obsidian);
+    drawEmbers(embers);
+}
+function drawLavaPools(arr) {
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const r = 8 + ((h >>> 24) & 7);
+        // outer glow
+        ctx.fillStyle = "rgba(255,100,40,0.18)";
+        ctx.beginPath(); ctx.ellipse(x, y, r * 1.9, r * 1.3, 0, 0, Math.PI * 2); ctx.fill();
+        // main lava
+        ctx.fillStyle = "#cd3a1a";
+        ctx.beginPath(); ctx.ellipse(x, y, r * 1.2, r * 0.9, 0, 0, Math.PI * 2); ctx.fill();
+        // bright hot center
+        ctx.fillStyle = "#ffb84a";
+        ctx.beginPath(); ctx.ellipse(x, y, r * 0.55, r * 0.4, 0, 0, Math.PI * 2); ctx.fill();
+    }
+}
+function drawLavaCracks(arr) {
+    ctx.strokeStyle = "#e84a1a";
+    ctx.lineWidth = 1.4;
+    ctx.lineCap = "round";
+    ctx.shadowColor = "#ff6020";
+    ctx.shadowBlur = 5;
+    ctx.beginPath();
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const segs = 3 + (h & 1);
+        let px = x, py = y;
+        ctx.moveTo(px, py);
+        for (let j = 0; j < segs; j++) {
+            const hj = hash(x + j * 7, y + j * 11);
+            const dx = ((hj & 0xff) / 255 - 0.5) * 9;
+            const dy = ((hj >>> 8) & 0xff) / 255 * 6;
+            px += dx; py += dy;
+            ctx.lineTo(px, py);
+        }
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+}
+function drawObsidianShards(arr) {
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const r = 3 + ((h >>> 24) & 3);
+        // shadow
+        ctx.fillStyle = "rgba(0,0,0,0.4)";
+        ctx.beginPath(); ctx.ellipse(x + 1, y + 2, r * 1.4, r * 0.6, 0, 0, Math.PI * 2); ctx.fill();
+        // shard polygon
+        ctx.fillStyle = "#15080a";
+        ctx.beginPath();
+        ctx.moveTo(x, y - r);
+        ctx.lineTo(x + r, y - r * 0.2);
+        ctx.lineTo(x + r * 0.5, y + r * 0.8);
+        ctx.lineTo(x - r * 0.8, y + r * 0.4);
+        ctx.closePath();
+        ctx.fill();
+        // red rim
+        ctx.strokeStyle = "rgba(220,80,40,0.55)";
+        ctx.lineWidth = 0.6;
+        ctx.stroke();
+    }
+}
+function drawEmbers(arr) {
+    // outer glow pass
+    ctx.fillStyle = "rgba(255,150,60,0.45)";
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const r = 0.9 + ((h >>> 4) & 1) * 0.6;
+        ctx.beginPath(); ctx.arc(x, y, r * 3, 0, Math.PI * 2); ctx.fill();
+    }
+    // bright cores
+    ctx.fillStyle = "#ffd680";
+    for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i], y = arr[i + 1], h = arr[i + 2];
+        const r = 0.9 + ((h >>> 4) & 1) * 0.6;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    }
+}
+
+function drawStoneWall() {
+    const W = world.width, H = world.height, T = 28;
+    drawWallBand(-T, -T, W + 2 * T, T);
+    drawWallBand(-T,  H, W + 2 * T, T);
+    drawWallBand(-T,  0, T, H);
+    drawWallBand( W,  0, T, H);
+}
+function drawWallBand(x, y, w, h) {
+    ctx.fillStyle = "#1f1f22";
+    ctx.fillRect(x, y, w, h);
+    const bw = 56, bh = 14, gap = 2;
+    const rows = Math.ceil(h / bh) + 1;
+    const cols = Math.ceil(w / bw) + 2;
+    for (let r = 0; r < rows; r++) {
+        const by = y + r * bh;
+        if (by >= y + h) break;
+        const offset = (r % 2) * (bw / 2);
+        for (let c = 0; c < cols; c++) {
+            const bx = x + c * bw - offset;
+            if (bx + bw <= x || bx >= x + w) continue;
+            const left = Math.max(bx, x);
+            const right = Math.min(bx + bw, x + w);
+            const top = Math.max(by, y);
+            const bot = Math.min(by + bh, y + h);
+            const shadeAmt = hash(Math.floor(bx), Math.floor(by)) & 0x1f;
+            const g = 70 + shadeAmt;
+            ctx.fillStyle = `rgb(${g},${g},${g + 4})`;
+            ctx.fillRect(left + gap / 2, top + gap / 2, right - left - gap, bot - top - gap);
+        }
+    }
+    ctx.strokeStyle = "#8b949e"; ctx.lineWidth = 1;
+    ctx.beginPath();
+    if (w > h) {
+        const edgeY = (y < 0) ? y + h : y;
+        ctx.moveTo(x, edgeY); ctx.lineTo(x + w, edgeY);
+    } else {
+        const edgeX = (x < 0) ? x + w : x;
+        ctx.moveTo(edgeX, y); ctx.lineTo(edgeX, y + h);
+    }
+    ctx.stroke();
+}
+
+function powerupColor(type) {
+    switch (type) {
+        case 'gold':   return '#facc15';
+        case 'shield': return '#58a6ff';
+        case 'speed':  return '#f0e84a';
+        case 'magnet': return '#c084fc';
+        default:       return '#ff7b72';
+    }
+}
+function powerupGlyph(type) {
+    switch (type) {
+        case 'gold':   return '★';
+        case 'shield': return '✦';
+        case 'speed':  return '⚡';
+        case 'magnet': return '⌬';
+        default:       return '';
+    }
+}
+
+function drawFood(f) {
+    const type = f.type || 'regular';
+    if (type === 'regular') {
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, 6, 0, Math.PI * 2);
+        ctx.fillStyle = f.color;
+        ctx.shadowColor = f.color;
+        ctx.shadowBlur = 8;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        return;
+    }
+    // Power-up: larger, pulsing glow, distinct color + glyph
+    const c = powerupColor(type);
+    const pulse = 0.85 + 0.15 * Math.sin(Date.now() / 200 + f.id);
+    const r = 11 * pulse;
+    ctx.save();
+    ctx.shadowColor = c;
+    ctx.shadowBlur = 16;
+    // Outer glow ring
+    ctx.fillStyle = c;
+    ctx.beginPath(); ctx.arc(f.x, f.y, r, 0, Math.PI * 2); ctx.fill();
+    // Inner bright spot
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(f.x, f.y, r * 0.45, 0, Math.PI * 2); ctx.fill();
+    // Glyph
+    ctx.fillStyle = c;
+    ctx.font = `bold ${Math.round(r * 1.3)}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(powerupGlyph(type), f.x, f.y + 1);
+    ctx.restore();
+}
+
+function segmentColorRaw(baseColor, pattern, i, total) {
+    if (pattern === "rainbow") {
+        const hsl = hexToHsl(baseColor);
+        const h = (hsl.h + i * (300 / total)) % 360;
+        return `hsl(${h}, ${Math.max(50, hsl.s)}%, ${Math.max(45, hsl.l)}%)`;
+    }
+    if (pattern === "stripes") {
+        return Math.floor(i / 2) % 2 === 0 ? baseColor : shade(baseColor, -45);
+    }
+    return i % 2 === 0 ? shade(baseColor, -10) : baseColor;
+}
+
+function drawSnake(s, isMe) {
+    const total = s.body.length;
+    if (total === 0) { drawSnakeHead(s, isMe); return; }
+    // Team mode overrides base color
+    if (s.team && (s.team === 'red' || s.team === 'blue')) {
+        s.color = s.team === 'red' ? '#f85149' : '#58a6ff';
+    }
+    const pattern = s.pattern || "solid";
+
+    // Shield ring: pulsing halo around the snake's head
+    if (s.shield) {
+        ctx.save();
+        const t = Date.now() / 250;
+        ctx.strokeStyle = `rgba(120, 180, 255, ${0.6 + 0.3 * Math.sin(t)})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, 22 + 2 * Math.sin(t * 2), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+    }
+    // Boost motion trail: faint sparkle particles drawn behind the snake
+    if (s.boosting && total >= 2) {
+        const tail = s.body[total - 1];
+        ctx.fillStyle = `rgba(255, 240, 120, 0.5)`;
+        for (let i = 0; i < 2; i++) {
+            const ang = Math.random() * Math.PI * 2;
+            ctx.beginPath();
+            ctx.arc(tail.x + Math.cos(ang) * 3, tail.y + Math.sin(ang) * 3, 1.6, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+    // Gold aura: golden glow around the head
+    if (s.gold) {
+        ctx.save();
+        ctx.shadowColor = '#facc15';
+        ctx.shadowBlur = 18;
+        ctx.fillStyle = 'rgba(250, 204, 21, 0.001)';  // invisible fill, just for the glow
+        ctx.beginPath(); ctx.arc(s.x, s.y, 16, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+    }
+
+    // --- Pre-compute per-segment radii + perpendicular vectors ---
+    const radii = new Array(total);
+    const perp = new Array(total);
+    for (let i = 0; i < total; i++) {
+        const taper = (total - i) / total;
+        radii[i] = Math.max(11 * Math.sin(taper * Math.PI / 2), 3);
+        let dx, dy;
+        if (i === 0)                  { dx = s.body[i].x - s.x;             dy = s.body[i].y - s.y; }
+        else if (i === total - 1)     { dx = s.body[i].x - s.body[i-1].x;   dy = s.body[i].y - s.body[i-1].y; }
+        else                          { dx = s.body[i+1].x - s.body[i-1].x; dy = s.body[i+1].y - s.body[i-1].y; }
+        const len = Math.sqrt(dx*dx + dy*dy) || 1;
+        perp[i] = { nx: -dy / len, ny: dx / len };
+    }
+
+    // --- 1. Smooth body fill underneath (continuous shape, no balls-on-a-string) ---
+    ctx.beginPath();
+    const hp = { nx: -Math.sin(s.angle), ny: Math.cos(s.angle) };
+    ctx.moveTo(s.x + hp.nx * 11, s.y + hp.ny * 11);
+    for (let i = 0; i < total; i++) {
+        ctx.lineTo(s.body[i].x + perp[i].nx * radii[i], s.body[i].y + perp[i].ny * radii[i]);
+    }
+    const tail = s.body[total - 1];
+    ctx.arc(tail.x, tail.y, radii[total - 1], Math.atan2(perp[total-1].ny, perp[total-1].nx), Math.atan2(-perp[total-1].ny, -perp[total-1].nx), false);
+    for (let i = total - 1; i >= 0; i--) {
+        ctx.lineTo(s.body[i].x - perp[i].nx * radii[i], s.body[i].y - perp[i].ny * radii[i]);
+    }
+    ctx.closePath();
+    ctx.fillStyle = shade(s.color, -22);
+    ctx.fill();
+
+    // --- 2. Pattern segments on top (alternating colors / stripes / rainbow) ---
+    for (let i = total - 1; i >= 0; i--) {
+        ctx.beginPath();
+        ctx.arc(s.body[i].x, s.body[i].y, radii[i] * 0.94, 0, Math.PI * 2);
+        ctx.fillStyle = segmentColorRaw(s.color, pattern, i, total);
+        ctx.fill();
+    }
+
+    // --- 3. Subtle dark outline ---
+    ctx.beginPath();
+    ctx.moveTo(s.x + hp.nx * 11, s.y + hp.ny * 11);
+    for (let i = 0; i < total; i++) {
+        ctx.lineTo(s.body[i].x + perp[i].nx * radii[i], s.body[i].y + perp[i].ny * radii[i]);
+    }
+    for (let i = total - 1; i >= 0; i--) {
+        ctx.lineTo(s.body[i].x - perp[i].nx * radii[i], s.body[i].y - perp[i].ny * radii[i]);
+    }
+    ctx.closePath();
+    ctx.strokeStyle = "rgba(0,0,0,0.32)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // --- 4. Belly highlight (lighter line down the spine) ---
+    ctx.beginPath();
+    ctx.moveTo(s.x, s.y);
+    for (let i = 0; i < total; i++) ctx.lineTo(s.body[i].x, s.body[i].y);
+    ctx.strokeStyle = "rgba(255,255,255,0.16)";
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.stroke();
+
+    // --- 5. Tongue (flickers, only when no avatar) ---
+    drawSnakeTongue(s);
+
+    // --- 6. Head ---
+    drawSnakeHead(s, isMe);
+
+    // --- 7. Name tag ---
+    if (s.name) {
+        ctx.fillStyle = isMe ? "#ffffff" : "#c9d1d9";
+        ctx.font = "bold 12px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText(s.name, s.x, s.y - 22);
+    }
+}
+
+function drawSnakeTongue(s) {
+    if (s.avatar) return;
+    if (playerImages.get(s.id)) return;
+    const t = Date.now() / 1000;
+    const flicker = Math.sin(t * 5 + s.id * 7) * 0.5 + 0.5;
+    if (flicker < 0.45) return;
+    const len = 5 + (flicker - 0.45) * 16;
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.rotate(s.angle);
+    ctx.strokeStyle = "#e84a5a";
+    ctx.lineWidth = 1.3;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(12, 0);
+    ctx.lineTo(12 + len, 0);
+    ctx.moveTo(12 + len, 0);
+    ctx.lineTo(12 + len + 2.5, -1.8);
+    ctx.moveTo(12 + len, 0);
+    ctx.lineTo(12 + len + 2.5, 1.8);
+    ctx.stroke();
+    ctx.restore();
+}
+
+function drawSnakeHead(s, isMe) {
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    const img = playerImages.get(s.id);
+    const hasImage = img && img.complete && img.naturalWidth > 0;
+
+    // Head outline + base
+    ctx.beginPath();
+    ctx.arc(0, 0, 14, 0, Math.PI * 2);
+    ctx.fillStyle = shade(s.color, 10);
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(0,0,0,0.3)";
+    ctx.stroke();
+    if (isMe) {
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
+
+    if (hasImage) {
+        ctx.save();
+        ctx.beginPath(); ctx.arc(0, 0, 13, 0, Math.PI * 2); ctx.clip();
+        ctx.drawImage(img, -13, -13, 26, 26);
+        ctx.restore();
+    } else if (s.avatar) {
+        ctx.save();
+        ctx.beginPath(); ctx.arc(0, 0, 14, 0, Math.PI * 2); ctx.clip();
+        const maxWidth = 24;
+        let fontSize = 22;
+        ctx.font = `${fontSize}px sans-serif`;
+        const w = ctx.measureText(s.avatar).width;
+        if (w > maxWidth) {
+            fontSize = Math.max(8, Math.floor(fontSize * maxWidth / w));
+            ctx.font = `${fontSize}px sans-serif`;
+        }
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText(s.avatar, 0, 1);
+        ctx.restore();
+    } else {
+        // Default snake face: eyes + nostrils
+        ctx.rotate(s.angle);
+        // Eyes (white sclera with dark pupil)
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath(); ctx.arc(5, -6, 3.2, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(5,  6, 3.2, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = "#1a1a1a";
+        ctx.beginPath(); ctx.arc(6, -6, 1.6, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(6,  6, 1.6, 0, Math.PI*2); ctx.fill();
+        // Nostrils
+        ctx.fillStyle = "rgba(0,0,0,0.5)";
+        ctx.beginPath(); ctx.arc(11, -2, 0.8, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(11,  2, 0.8, 0, Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+}
+
+function renderLeaderboard() {
+    // Hidden during active gameplay; reappears at round end (intermission)
+    // and stays visible in lobby/between-rounds states.
+    if (phase === "playing") {
+        leaderboardEl.style.display = "none";
+        return;
+    }
+    leaderboardEl.style.display = "";
+    const rows = leaderboard.map(p => {
+        const cls = p.id === myId ? "row me" : "row";
+        const av = p.avatar ? `${escapeHtml(p.avatar)} ` : "";
+        const name = (p.name || "anon") + (p.alive ? "" : " 💀");
+        return `<div class="${cls}"><span>${av}${escapeHtml(name)}</span><span>${p.score}</span></div>`;
+    }).join("");
+    leaderboardRowsEl.innerHTML = rows;
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function shade(hex, delta) {
+    if (!hex.startsWith("#")) return hex;
+    const n = parseInt(hex.slice(1), 16);
+    const r = Math.max(0, Math.min(255, ((n >> 16) & 0xff) + delta));
+    const g = Math.max(0, Math.min(255, ((n >> 8) & 0xff) + delta));
+    const b = Math.max(0, Math.min(255, (n & 0xff) + delta));
+    return `rgb(${r},${g},${b})`;
+}
+function hexToHsl(hex) {
+    if (!hex.startsWith("#")) return { h: 120, s: 50, l: 50 };
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    const l = (max + min) / 2;
+    if (max === min) return { h: 0, s: 0, l: l * 100 };
+    const d = max - min;
+    const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    let h;
+    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0));
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    return { h: h * 60, s: s * 100, l: l * 100 };
+}
+
+// ---------------- fullscreen canvas ----------------
+function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    // Keep mouse target somewhere sensible until first move
+    if (!mouse.set) {
+        mouse.x = canvas.width / 2;
+        mouse.y = canvas.height / 2 - 100;
+    }
+}
+window.addEventListener("resize", resizeCanvas);
+resizeCanvas();
+
+// ---------------- init ----------------
+showScreen("rooms");
+drawSkinPreview();
+connect();
+render();
+
+// Register the service worker so the page is installable as a PWA.
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js').catch(err => {
+            console.warn('SW registration failed:', err);
+        });
+    });
+}
+    </script>
+</body>
+</html>

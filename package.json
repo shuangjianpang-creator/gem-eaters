@@ -1,0 +1,15 @@
+{
+  "name": "snake-game",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "build:icons": "node scripts/build-icons.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "sharp": "^0.34.5"
+  }
+}
