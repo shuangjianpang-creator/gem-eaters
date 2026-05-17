@@ -1,0 +1,15 @@
+# Render Blueprint — defines the service so Render can auto-provision it
+# from this repo. https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: gem-eaters
+    runtime: docker
+    plan: free                   # 512MB RAM, sleeps after 15min idle
+    region: oregon               # closest to most players; also: singapore, frankfurt, ohio
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    numInstances: 1              # MUST be 1 — game state lives in memory
+    autoDeploy: true             # rebuild on every push to main
+    envVars:
+      - key: NODE_ENV
+        value: production
