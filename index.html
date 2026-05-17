@@ -740,10 +740,11 @@ function drawParticles() {
 function drawSafeZone() {
     if (!safeZone) return;
     const { cx, cy, r } = safeZone;
-    // 1. Dim red fill over the *dangerous* area (everywhere except inside the circle).
-    //    Use evenodd to punch the circle out of a big covering rect.
+
+    // 1. Heavy fade-out over the dangerous area (everywhere outside the circle).
+    //    Use evenodd to punch the safe circle out of a big covering rect.
     ctx.save();
-    ctx.fillStyle = 'rgba(180, 30, 30, 0.22)';
+    ctx.fillStyle = 'rgba(8, 0, 4, 0.62)';
     ctx.beginPath();
     ctx.rect(-2000, -2000, world.width + 4000, world.height + 4000);
     ctx.arc(cx, cy, r, 0, Math.PI * 2, true);
@@ -751,7 +752,20 @@ function drawSafeZone() {
     ctx.fill('evenodd');
     ctx.restore();
 
-    // 2. Pulsing red boundary ring with soft glow
+    // 2. Soft red gradient just outside the boundary so the fade isn't a hard line.
+    const grad = ctx.createRadialGradient(cx, cy, r, cx, cy, r + 70);
+    grad.addColorStop(0, 'rgba(248, 81, 73, 0)');
+    grad.addColorStop(1, 'rgba(180, 30, 30, 0.45)');
+    ctx.save();
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + 70, 0, Math.PI * 2);
+    ctx.arc(cx, cy, r, 0, Math.PI * 2, true);
+    ctx.closePath();
+    ctx.fill('evenodd');
+    ctx.restore();
+
+    // 3. Pulsing red boundary ring with glow.
     const pulse = 0.65 + 0.35 * Math.sin(Date.now() / 240);
     ctx.save();
     ctx.shadowColor = '#f85149';
