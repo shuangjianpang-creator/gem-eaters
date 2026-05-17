@@ -1545,6 +1545,12 @@ function render() {
         ctx.beginPath();
         ctx.arc(safeZone.cx, safeZone.cy, safeZone.r, 0, Math.PI * 2);
         ctx.clip();
+        // Paint the theme base color across the full visible viewport before
+        // drawTerrain runs — drawTerrain's helpers clamp to the world rect, so
+        // any pixel inside the circle but at the rect's edge could otherwise
+        // be left unpainted and show the canvas background through.
+        ctx.fillStyle = currentTheme.base;
+        ctx.fillRect(cam.x, cam.y, canvas.width, canvas.height);
         drawTerrain(cam);
         for (const f of foodList) drawFood(f);
         for (const s of renderSnakes) drawSnake(s, s.id === myId);
