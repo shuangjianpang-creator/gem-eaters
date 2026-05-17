@@ -1,3 +1,21 @@
+// Top-level game client. Wires DOM, network, render loop, and input together.
+// Pure data + helpers live in sibling modules; this file owns the mutable
+// runtime state (current snakes, phase, room, etc.) and the canvas.
+
+import { lerp, lerpAngle, hash, noise2d, escapeHtml, shade, hexToHsl } from './utils.js';
+import {
+    RANDOM_NAMES, RANDOM_AVATARS, RANDOM_COLORS, COLOR_PALETTE,
+    MODES_LIST, THEMES, pickRandom,
+} from './themes.js';
+import {
+    setMuted, setVolume,
+    sndEat, sndPowerup, sndDie, sndCountdown, sndStart,
+} from './audio.js';
+import {
+    setParticlesReduceMotion, spawnEatPuff, spawnDeathBurst,
+    updateParticles, drawParticles, triggerDeathFlash, drawDeathFlash,
+} from './particles.js';
+
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 const myScoreEl = document.getElementById("myScore");
@@ -55,7 +73,6 @@ function showTutorial() {
     let idx = 0;
     function render() {
         const s = TUTORIAL_STEPS[idx];
-        // Re-trigger fade animation on each card
         card.style.animation = 'none'; void card.offsetWidth; card.style.animation = '';
         emo.textContent = s.emoji;
         title.textContent = s.title;
@@ -82,7 +99,6 @@ const loadingSplash = document.getElementById("loadingSplash");
 const loadingHint = document.getElementById("loadingHint");
 const loadingElapsed = document.getElementById("loadingElapsed");
 const SPLASH_T0 = Date.now();
-// Progressive hints + live elapsed counter so the wait doesn't feel broken.
 const splashTimer = setInterval(() => {
     if (!loadingSplash || loadingSplash.classList.contains("hide")) {
         clearInterval(splashTimer);
@@ -106,9 +122,6 @@ function hideSplash() {
     loadingSplash.classList.add("hide");
     setTimeout(() => loadingSplash.classList.add("gone"), 500);
 }
-// Absolute fallback — if for any reason we never get a welcome message
-// (firewall, broken WS, etc.) hide the splash after 90s so the user at least
-// sees the rooms screen rather than staring at a spinner forever.
 setTimeout(hideSplash, 90_000);
 
 // ---------------- persistent stats + daily challenges (localStorage) ----------------
@@ -133,8 +146,8 @@ function todayKey() {
 }
 function pickTodayChallenge() {
     const key = todayKey();
-    const hash = [...key].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 0);
-    return DAILY_CHALLENGES[hash % DAILY_CHALLENGES.length];
+    const h = [...key].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 0);
+    return DAILY_CHALLENGES[h % DAILY_CHALLENGES.length];
 }
 let daily = JSON.parse(localStorage.getItem(DAILY_KEY) || '{}');
 if (daily.day !== todayKey()) {
@@ -322,22 +335,10 @@ const intermissionSubEl = document.getElementById("intermissionSub");
 const standingsListEl = document.getElementById("standingsList");
 
 // ---------------- identity & local state ----------------
-// Random-default profile for first-time visitors so they can hit Quick Play
-// immediately instead of being forced through the profile slide.
-const RANDOM_NAMES = [
-    'Slither', 'Hisser', 'Coil', 'Fang', 'Viper', 'Nibble', 'Wiggle', 'Zigzag',
-    'Boop', 'Dart', 'Scaly', 'Loop', 'Glide', 'Snappy', 'Twirl', 'Spike',
-];
-const RANDOM_AVATARS = ['🐍','🐉','🦊','🐺','🦄','🐙','🦖','👾','🔥','⚡','🐲','🦅'];
-const RANDOM_COLORS  = ['#56d364','#f0883e','#a371f7','#58a6ff','#f85149','#d29922','#ec4899','#06b6d4','#facc15','#34d399','#fb7185','#a3e635'];
-function pickRandom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
-
 let SAVED_NAME    = localStorage.getItem("snakeName")    || "";
 let SAVED_AVATAR  = localStorage.getItem("snakeAvatar")  || "";
 let SAVED_COLOR   = localStorage.getItem("snakeColor")   || "";
 let SAVED_PATTERN = localStorage.getItem("snakePattern") || "";
-// If anything is missing (first visit), fill in random defaults and persist
-// them so the user can just hit Quick Play / Join.
 if (!SAVED_NAME) {
     SAVED_NAME = pickRandom(RANDOM_NAMES) + ' ' + Math.floor(Math.random() * 900 + 100);
     localStorage.setItem("snakeName", SAVED_NAME);
@@ -356,97 +357,11 @@ let myAvatar = SAVED_AVATAR;
 let selectedAvatar = SAVED_AVATAR;
 let myColor = SAVED_COLOR;
 let myPattern = SAVED_PATTERN;
-let myAvatarImage = localStorage.getItem("snakeAvatarImage") || null;  // data URL or null
+let myAvatarImage = localStorage.getItem("snakeAvatarImage") || null;
 let isReady = false;
 
-// playerId -> HTMLImageElement; populated via 'playerImage' messages
 const playerImages = new Map();
-// playerId -> {emote: string, until: timestamp_ms}; floats above the snake's head
 const activeEmotes = new Map();
-
-// ---------------- particles ----------------
-const particles = [];
-
-function spawnEatPuff(x, y, color) {
-    if (typeof settings !== 'undefined' && settings.reduceMotion) return;
-    for (let i = 0; i < 7; i++) {
-        const ang = Math.random() * Math.PI * 2;
-        const sp = 1.5 + Math.random() * 2;
-        particles.push({
-            x, y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
-            r: 1.5 + Math.random() * 1.5,
-            color, life: 0, maxLife: 22 + Math.random() * 10,
-        });
-    }
-}
-function spawnDeathBurst(snake) {
-    const total = snake.body.length;
-    if (total === 0) return;
-    // One chunky body-segment particle per segment, flying outward from snake center
-    for (let i = 0; i < total; i++) {
-        const seg = snake.body[i];
-        const taper = (total - i) / total;
-        const segR = Math.max(11 * Math.sin(taper * Math.PI / 2), 3);
-        const dx = seg.x - snake.x;
-        const dy = seg.y - snake.y;
-        const baseAng = Math.atan2(dy || (Math.random() - 0.5), dx || (Math.random() - 0.5));
-        const ang = baseAng + (Math.random() - 0.5) * 0.7;
-        const sp = 2 + Math.random() * 3.5;
-        particles.push({
-            x: seg.x, y: seg.y,
-            vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
-            r: segR * 0.9,
-            color: i % 2 === 0 ? shade(snake.color, -15) : (snake.color || '#7ee787'),
-            life: 0, maxLife: 55 + Math.random() * 35,
-        });
-    }
-    // Bright dust particles for sparkle
-    for (let i = 0; i < 28; i++) {
-        const seg = snake.body[Math.floor(Math.random() * total)] || snake;
-        const ang = Math.random() * Math.PI * 2;
-        const sp = 3 + Math.random() * 5;
-        particles.push({
-            x: seg.x, y: seg.y,
-            vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
-            r: 1 + Math.random() * 2,
-            color: '#ffffff', life: 0, maxLife: 28 + Math.random() * 18,
-        });
-    }
-}
-
-// Brief white-to-transparent screen flash on your own death.
-let deathFlashUntil = 0;
-function triggerDeathFlash() {
-    if (typeof settings !== 'undefined' && settings.reduceMotion) return;
-    deathFlashUntil = Date.now() + 280;
-}
-function drawDeathFlash() {
-    if (Date.now() > deathFlashUntil) return;
-    const remaining = deathFlashUntil - Date.now();
-    const alpha = (remaining / 280) * 0.5;
-    ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-}
-function updateParticles() {
-    for (let i = particles.length - 1; i >= 0; i--) {
-        const p = particles[i];
-        p.x += p.vx; p.y += p.vy;
-        p.vx *= 0.94; p.vy *= 0.94;
-        p.life++;
-        if (p.life >= p.maxLife) particles.splice(i, 1);
-    }
-}
-function drawParticles() {
-    for (const p of particles) {
-        const a = 1 - p.life / p.maxLife;
-        ctx.globalAlpha = a;
-        ctx.fillStyle = p.color;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.r * (0.4 + a * 0.6), 0, Math.PI * 2);
-        ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-}
 
 // ---------------- Obstacles (theme-colored deadly props) ----------------
 function drawObstacles() {
@@ -457,12 +372,10 @@ function drawObstacles() {
     const glow    = isLava ? '#ff6020' : isSnow ? '#c0d0e0' : '#000000';
     const rimColor = isLava ? '#ffa040' : isSnow ? '#ffffff' : '#5a5a60';
     for (const o of obstacles) {
-        // Ground shadow
         ctx.fillStyle = 'rgba(0,0,0,0.45)';
         ctx.beginPath();
         ctx.ellipse(o.x + 3, o.y + 6, o.r * 1.1, o.r * 0.45, 0, 0, Math.PI * 2);
         ctx.fill();
-        // Body with theme-appropriate glow
         ctx.save();
         if (isLava) { ctx.shadowColor = glow; ctx.shadowBlur = 14; }
         ctx.fillStyle = baseFill;
@@ -470,13 +383,11 @@ function drawObstacles() {
         ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
-        // Rim
         ctx.strokeStyle = rimColor;
         ctx.lineWidth = 3;
         ctx.beginPath();
         ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
         ctx.stroke();
-        // Highlight blob top-left
         ctx.fillStyle = isLava ? 'rgba(255,200,90,0.55)' : 'rgba(255,255,255,0.22)';
         ctx.beginPath();
         ctx.ellipse(o.x - o.r * 0.35, o.y - o.r * 0.35, o.r * 0.45, o.r * 0.28, 0, 0, Math.PI * 2);
@@ -488,7 +399,6 @@ function drawObstacles() {
 function drawHill() {
     if (!hill) return;
     const { cx, cy, r } = hill;
-    // Translucent gold disc
     const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
     grad.addColorStop(0, 'rgba(250, 204, 21, 0.22)');
     grad.addColorStop(1, 'rgba(250, 204, 21, 0.06)');
@@ -496,7 +406,6 @@ function drawHill() {
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.fill();
-    // Pulsing gold ring
     const pulse = 0.6 + 0.4 * Math.sin(Date.now() / 320);
     ctx.save();
     ctx.shadowColor = '#facc15';
@@ -507,7 +416,6 @@ function drawHill() {
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
-    // Crown icon at center
     ctx.fillStyle = 'rgba(250, 204, 21, 0.55)';
     ctx.font = `${Math.round(r * 0.42)}px Arial`;
     ctx.textAlign = 'center';
@@ -521,7 +429,6 @@ function drawCircularWall() {
     const { cx, cy, r } = safeZone;
     const WALL_THICKNESS = 26;
 
-    // 1. Pure dark void filling everywhere outside the circle.
     ctx.save();
     ctx.fillStyle = '#03050a';
     ctx.beginPath();
@@ -531,21 +438,17 @@ function drawCircularWall() {
     ctx.fill('evenodd');
     ctx.restore();
 
-    // 2. The wall — a thick stone-grey ring sitting just OUTSIDE the playable
-    //    circle, with a darker inner mortar line at the boundary.
     ctx.save();
     ctx.strokeStyle = '#3a3a40';
     ctx.lineWidth = WALL_THICKNESS;
     ctx.beginPath();
     ctx.arc(cx, cy, r + WALL_THICKNESS / 2, 0, Math.PI * 2);
     ctx.stroke();
-    // Lighter outer rim
     ctx.strokeStyle = '#5a5a60';
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.arc(cx, cy, r + WALL_THICKNESS, 0, Math.PI * 2);
     ctx.stroke();
-    // Dark mortar at the inner edge
     ctx.strokeStyle = '#181820';
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -553,8 +456,6 @@ function drawCircularWall() {
     ctx.stroke();
     ctx.restore();
 
-    // 3. Pulsing red danger glow just inside the boundary so players see it
-    //    closing in. Drawn on top of the inside edge.
     const pulse = 0.55 + 0.35 * Math.sin(Date.now() / 240);
     ctx.save();
     ctx.shadowColor = '#f85149';
@@ -567,41 +468,13 @@ function drawCircularWall() {
     ctx.restore();
 }
 
-// ---------------- sound (Web Audio, generated) ----------------
-let audioCtx = null;
-let audioMuted = localStorage.getItem("snakeMuted") === "1";
-
-function ensureAudio() {
-    if (audioMuted) return null;
-    if (!audioCtx) {
-        try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
-        catch { return null; }
-    }
-    if (audioCtx.state === 'suspended') audioCtx.resume();
-    return audioCtx;
-}
-function tone(freq, dur, type = 'sine', vol = 0.2, delay = 0) {
-    const ac = ensureAudio();
-    if (!ac) return;
-    const t0 = ac.currentTime + delay;
-    const osc = ac.createOscillator();
-    const g = ac.createGain();
-    osc.type = type;
-    osc.frequency.setValueAtTime(freq, t0);
-    g.gain.setValueAtTime(vol * (settings ? settings.volume : 1), t0);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    osc.connect(g); g.connect(ac.destination);
-    osc.start(t0); osc.stop(t0 + dur);
-}
-function sndEat()      { tone(820, 0.07, 'square', 0.12); tone(1240, 0.06, 'square', 0.10, 0.03); }
-function sndPowerup()  { tone(560, 0.07, 'sine', 0.18); tone(820, 0.07, 'sine', 0.18, 0.05); tone(1180, 0.10, 'sine', 0.20, 0.10); }
-function sndDie()      { tone(180, 0.4, 'sawtooth', 0.22); tone(90, 0.4, 'sawtooth', 0.18, 0.08); }
-function sndCountdown(){ tone(1600, 0.04, 'square', 0.14); }
-function sndStart()    { tone(440, 0.08, 'triangle', 0.18); tone(660, 0.08, 'triangle', 0.18, 0.08); tone(880, 0.12, 'triangle', 0.2, 0.16); }
 // ---------------- mute toggle ----------------
+let audioMuted = localStorage.getItem("snakeMuted") === "1";
+setMuted(audioMuted);
 muteToggleEl.textContent = audioMuted ? "🔇" : "🔊";
 muteToggleEl.addEventListener("click", () => {
     audioMuted = !audioMuted;
+    setMuted(audioMuted);
     localStorage.setItem("snakeMuted", audioMuted ? "1" : "0");
     muteToggleEl.textContent = audioMuted ? "🔇" : "🔊";
 });
@@ -612,7 +485,8 @@ const settings = Object.assign(
     JSON.parse(localStorage.getItem("snakeSettings") || "{}")
 );
 function saveSettings() { localStorage.setItem("snakeSettings", JSON.stringify(settings)); }
-function shouldReduceMotion() { return !!settings.reduceMotion; }
+setVolume(settings.volume);
+setParticlesReduceMotion(settings.reduceMotion);
 
 const settingsToggle = document.getElementById("settingsToggle");
 const settingsOverlay = document.getElementById("settingsOverlay");
@@ -630,11 +504,13 @@ settingsClose.addEventListener("click", () => { settingsOverlay.style.display = 
 settingsOverlay.addEventListener("click", (e) => { if (e.target === settingsOverlay) settingsOverlay.style.display = "none"; });
 settingVolume.addEventListener("input", () => {
     settings.volume = settingVolume.value / 100;
+    setVolume(settings.volume);
     settingVolumeLabel.textContent = settingVolume.value + "%";
     saveSettings();
 });
 settingReduceMotion.addEventListener("change", () => {
     settings.reduceMotion = settingReduceMotion.checked;
+    setParticlesReduceMotion(settings.reduceMotion);
     saveSettings();
 });
 
@@ -655,29 +531,21 @@ for (const btn of emoteWheel.querySelectorAll(".emoteBtn")) {
 }
 
 let roomList = [];
-let currentRoom = null;          // { id, name, ownerId } | null
-let lobbyPlayers = [];           // populated during lobby phase
-let phase = "none";              // "none" | "lobby" | "playing" | "intermission"
+let currentRoom = null;
+let lobbyPlayers = [];
+let phase = "none";
 let phaseEndsAt = 0;
 let roundNumber = 0;
-let currentMode = "ffa";         // "ffa" | "lastman" | "teams"
+let currentMode = "ffa";
 let myEffects = { goldRemain: 0, shieldRemain: 0, speedRemain: 0, magnetRemain: 0 };
 let meEliminated = false;
 let prevMyScore = 0;
 let prevFoodIds = new Set();
-let safeZone = null;   // { cx, cy, r } in LSS mode, else null
-let spectatingId = null;  // when eliminated, server tells us whose camera to use
-let obstacles = [];    // static hazards on the current map
-let hill = null;       // { cx, cy, r } in KOTH mode, else null
-let itPlayerId = null; // who's "it" in Tag mode
-
-const MODES_LIST = [
-    { id: 'ffa',     name: 'Free for All',        icon: '⚔️', description: 'Eat food, eat rivals. Highest score wins.' },
-    { id: 'lastman', name: 'Last Snake Standing', icon: '💀', description: 'One death and you\'re out. Last alive wins.' },
-    { id: 'teams',   name: 'Teams (Red vs Blue)', icon: '🚩', description: 'Auto-assigned. No friendly fire. Team score totals.' },
-    { id: 'koth',    name: 'King of the Hill',    icon: '👑', description: 'Stay in the gold ring to earn points. Highest score wins.' },
-    { id: 'tag',     name: 'Tag — you\'re it!',  icon: '👹', description: 'Collisions pass the "it" status. Score = time NOT being it.' },
-];
+let safeZone = null;
+let spectatingId = null;
+let obstacles = [];
+let hill = null;
+let itPlayerId = null;
 
 let renderSnakes = [];
 let targetSnakes = [];
@@ -687,38 +555,10 @@ let standings = null;
 let isDead = false;
 let lastDeathReason = "wall";
 let lastDeathScore = 0;
-let lastKiller = null;       // {id, name, avatar, color, score} or null
+let lastKiller = null;
 
 let ws = null;
 
-const COLOR_PALETTE = ['#56d364', '#f0883e', '#a371f7', '#58a6ff', '#f85149', '#d29922', '#ec4899', '#06b6d4', '#facc15', '#34d399', '#fb7185', '#a3e635'];
-
-const THEMES = {
-    grasslands: {
-        base: "#2c4a2c", patchDark: "#26412a", patchLight: "#365a37", patchBright: "#3f6b40",
-        bladeDark: "#234722", bladeLight: "#4d7a4a",
-        clumpShadow: "rgba(0,0,0,0.18)", clumpDark: "#1f3e1e", clumpLight: "#5b8e58",
-        pebbleBase: 108,
-    },
-    desert: {
-        base: "#c4a86c", patchDark: "#a08850", patchLight: "#d4b878", patchBright: "#e8cf98",
-        bladeDark: "#8a6e3c", bladeLight: "#b89860",
-        clumpShadow: "rgba(60,40,15,0.22)", clumpDark: "#6a4f2b", clumpLight: "#8a7045",
-        pebbleBase: 150,
-    },
-    snow: {
-        base: "#dde3eb", patchDark: "#c2cad4", patchLight: "#ecf0f5", patchBright: "#ffffff",
-        bladeDark: "#9ba8b7", bladeLight: "#c5cfdb",
-        clumpShadow: "rgba(70,90,120,0.18)", clumpDark: "#7a8694", clumpLight: "#a9b4c0",
-        pebbleBase: 200,
-    },
-    lava: {
-        base: "#1a0808", patchDark: "#100404", patchLight: "#2a0e0a", patchBright: "#3d1410",
-        bladeDark: "#5a1a10", bladeLight: "#a02f1c",
-        clumpShadow: "rgba(0,0,0,0.4)", clumpDark: "#3a0c08", clumpLight: "#9a2a18",
-        pebbleBase: 60,
-    },
-};
 let currentTheme = THEMES.grasslands;
 let currentThemeId = 'grasslands';
 let availableMaps = [{ id: 'grasslands', name: 'Grasslands', theme: 'grasslands', size: 3000 }];
@@ -763,13 +603,10 @@ function handleMessage(event) {
             myId = msg.id;
             world = msg.world;
             hideSplash();
-            // If the URL had ?room=ID, auto-join that room after identity is sent.
             if (PENDING_ROOM_FROM_URL && !currentRoom) {
                 pendingUrlJoinId = PENDING_ROOM_FROM_URL;
                 send({ type: "joinRoom", roomId: PENDING_ROOM_FROM_URL });
             }
-            // Cache our own image locally so we render correctly even before any
-            // playerImage echo from the server.
             if (myAvatarImage) {
                 const img = new Image();
                 img.onload = () => drawSkinPreview();
@@ -794,8 +631,7 @@ function handleMessage(event) {
             currentRoom = { id: msg.roomId, ownerId: msg.ownerId, name: "" };
             phase = "lobby";
             isReady = false;
-            pendingUrlJoinId = null;  // URL-join succeeded
-            // Sticky URL so a refresh rejoins this room.
+            pendingUrlJoinId = null;
             try { history.replaceState(null, "", `?room=${msg.roomId}`); } catch {}
             showScreen("lobby");
             break;
@@ -840,9 +676,7 @@ function handleMessage(event) {
             itPlayerId = msg.itPlayerId || null;
             applyMap(msg.map);
 
-            // Eat detection: foods that disappeared near our snake = we ate them
             const mySnake = msg.snakes.find(s => s.id === myId);
-            // Track our combo level for achievement
             if (mySnake && mySnake.combo) trackCombo(mySnake.combo);
             if (mySnake && prevFood && foodList) {
                 const currentIds = new Set(foodList.map(f => f.id));
@@ -885,7 +719,6 @@ function handleMessage(event) {
                 isDead = false;
                 showScreen("none");
             }
-            // Track best score continuously during play (don't wait for end).
             if (phase === "playing" && me) trackBestScore(me.score);
             break;
         }
@@ -902,14 +735,11 @@ function handleMessage(event) {
                     color: msg.killerColor,
                     score: msg.killerScore,
                 } : null;
-                // Death explosion at our snake's last known position
                 const me = renderSnakes.find(s => s.id === myId);
                 if (me) spawnDeathBurst(me);
                 triggerDeathFlash();
                 sndDie();
                 showDeathPanel();
-                // LSS-eliminated: dismiss the panel after a brief moment so
-                // they can watch the rest of the round as a spectator.
                 if (meEliminated) {
                     setTimeout(() => {
                         if (meEliminated && phase === "playing") showScreen("none");
@@ -925,8 +755,6 @@ function handleMessage(event) {
             activeEmotes.set(msg.id, { emote: msg.emote, until: Date.now() + 2200 });
             break;
         case "error":
-            // Invite-link join just failed: give a friendlier message and
-            // strip the ?room= URL so a refresh doesn't loop the error.
             if (pendingUrlJoinId && msg.message === 'Room not found') {
                 const stale = pendingUrlJoinId;
                 pendingUrlJoinId = null;
@@ -957,7 +785,6 @@ function showScreen(name) {
     else                 overlayEl.classList.remove("hidden");
     if (name === "rooms") {
         send({ type: "listRooms" });
-        // Returning users (saved name) start on the rooms slide; first-timers start on profile.
         showSlide(SAVED_NAME ? 1 : 0);
     }
 }
@@ -1025,7 +852,6 @@ inviteButton.addEventListener("click", async () => {
             inviteButton.classList.remove("copied");
         }, 1800);
     } catch {
-        // Older browsers / no permission: select-and-prompt fallback
         prompt("Copy this link to invite friends:", url);
     }
 });
@@ -1087,7 +913,7 @@ avatarImageFileEl.addEventListener("change", async (e) => {
         avatarImageHint.style.color = "#f85149";
         console.warn(err);
     }
-    avatarImageFileEl.value = "";  // allow re-upload of same file
+    avatarImageFileEl.value = "";
 });
 avatarImageClear.addEventListener("click", () => setMyAvatarImage(null));
 
@@ -1117,7 +943,6 @@ function setMyAvatarImage(dataUrl) {
 }
 
 // Center-crop incoming image to a square, resize to 96×96, JPEG-encode.
-// 96×96 JPEG @ 0.82 is ~3-6 KB, well inside the server's 32KB cap.
 async function cropAvatarImage(file) {
     if (file.size > 8 * 1024 * 1024) throw new Error("Image too large (>8MB)");
     const dataUrl = await new Promise((resolve, reject) => {
@@ -1142,7 +967,6 @@ async function cropAvatarImage(file) {
     return out.toDataURL("image/jpeg", 0.82);
 }
 
-// Restore saved image on load (preview only; sent on welcome when myId is known).
 if (myAvatarImage) {
     avatarImageClear.style.display = "";
     avatarImageHint.textContent = "Uploaded ✓";
@@ -1206,7 +1030,6 @@ function drawSkinPreview() {
         pctx.fillStyle = segmentColorRaw(myColor, myPattern, i, total);
         pctx.fill();
     }
-    // head
     pctx.beginPath();
     pctx.arc(HEAD_X, cy, HEAD_R, 0, Math.PI * 2);
     pctx.fillStyle = shade(myColor, 10);
@@ -1256,7 +1079,6 @@ function renderLobby() {
 
     const amOwnerLobby = currentRoom.ownerId === myId;
 
-    // Mode cards
     modeHintEl.textContent = amOwnerLobby ? "Click a mode" : "Chosen by room owner";
     const currentModeId = (currentRoom.mode || 'ffa');
     modeGridEl.innerHTML = MODES_LIST.map(m => {
@@ -1277,7 +1099,6 @@ function renderLobby() {
         }
     }
 
-    // Map cards — owner clickable, others read-only with same highlight
     mapHintEl.textContent = amOwnerLobby ? "Click a map to choose" : "Chosen by room owner";
     mapGridEl.innerHTML = availableMaps.map(m => {
         const theme = THEMES[m.theme] || THEMES.grasslands;
@@ -1335,7 +1156,6 @@ function renderLobby() {
     startButton.disabled = !allReady;
     startButton.textContent = allReady ? "Start Game" : `Waiting (${readyCount}/${lobbyPlayers.length})`;
 
-    // Status line everyone sees
     if (lobbyPlayers.length <= 1) {
         lobbyStatusEl.textContent = "Waiting for more players to join...";
     } else if (allReady) {
@@ -1386,11 +1206,11 @@ function showKillToast(victimName, victimAvatar, victimScore) {
     killToastScoreEl.textContent = victimScore || 0;
     killToastEl.style.display = "";
     killToastEl.style.animation = 'none';
-    void killToastEl.offsetWidth;  // force reflow so animation restarts
+    void killToastEl.offsetWidth;
     killToastEl.style.animation = '';
     clearTimeout(showKillToast._t);
     showKillToast._t = setTimeout(() => { killToastEl.style.display = "none"; }, 2500);
-    sndPowerup();  // celebratory sound
+    sndPowerup();
 }
 respawnButton.addEventListener("click", () => {
     send({ type: "respawn" });
@@ -1421,7 +1241,6 @@ canvas.addEventListener("mousemove", (event) => {
     mouse.set = true;
 });
 
-// Boost: hold Space, right-click, or two-finger touch
 canvas.addEventListener("touchmove", (e) => {
     if (e.touches.length >= 1 && phase === "playing") {
         const rect = canvas.getBoundingClientRect();
@@ -1435,8 +1254,6 @@ canvas.addEventListener("touchmove", (e) => {
 function me() { return renderSnakes.find(s => s.id === myId); }
 
 function focusSnake() {
-    // If we're eliminated and the server is pointing us at someone to spectate,
-    // follow that snake. Otherwise follow ourselves.
     if (meEliminated && spectatingId != null) {
         const t = renderSnakes.find(s => s.id === spectatingId);
         if (t) return t;
@@ -1444,15 +1261,14 @@ function focusSnake() {
     return me();
 }
 
-// Zoom out as the snake grows — short snake = close camera (action),
-// long snake = wide camera (situational awareness + sense of size).
+// Zoom out as the snake grows.
 function snakeZoom() {
     const m = focusSnake();
     if (!m) return 1;
-    const baseLen = 15;     // INITIAL_SEGMENTS
+    const baseLen = 15;
     const len = m.body.length;
     const t = Math.min(1, Math.max(0, (len - baseLen) / 50));
-    return 1 - t * 0.35;    // ranges 1.0 → 0.65
+    return 1 - t * 0.35;
 }
 
 function cameraOffset() {
@@ -1471,13 +1287,6 @@ setInterval(() => {
 }, 33);
 
 // ---------------- render loop ----------------
-function lerp(a, b, t) { return a + (b - a) * t; }
-function lerpAngle(a, b, t) {
-    let diff = b - a;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    return a + diff * t;
-}
 function ease(t) {
     const byId = new Map(renderSnakes.map(s => [s.id, s]));
     const next = [];
@@ -1527,10 +1336,8 @@ function render() {
         ctx.beginPath();
         ctx.arc(safeZone.cx, safeZone.cy, safeZone.r, 0, Math.PI * 2);
         ctx.clip();
-        // Paint the theme base color across the full visible viewport before
-        // drawTerrain runs — drawTerrain's helpers clamp to the world rect, so
-        // any pixel inside the circle but at the rect's edge could otherwise
-        // be left unpainted and show the canvas background through.
+        // Pre-fill so drawTerrain (which clamps to the world rect) never
+        // leaves the canvas background showing through inside the circle.
         ctx.fillStyle = currentTheme.base;
         ctx.fillRect(cam.x, cam.y, camWorldW(cam), camWorldH(cam));
         drawTerrain(cam);
@@ -1538,7 +1345,6 @@ function render() {
         for (const f of foodList) drawFood(f);
         for (const s of renderSnakes) drawSnake(s, s.id === myId);
         ctx.restore();
-        // Void outside the circle, then the wall itself, drawn unclipped.
         drawCircularWall();
     } else {
         drawTerrain(cam);
@@ -1549,7 +1355,7 @@ function render() {
         for (const s of renderSnakes) drawSnake(s, s.id === myId);
     }
     updateParticles();
-    drawParticles();
+    drawParticles(ctx);
     drawActiveEmotes();
     drawComboBadges();
     drawItMarker();
@@ -1557,7 +1363,7 @@ function render() {
     ctx.restore();
 
     drawUrgencyVignette();
-    drawDeathFlash();
+    drawDeathFlash(ctx, canvas.width, canvas.height);
     drawEffectBadges();
     renderLeaderboard();
     if (phase === "intermission") renderIntermission();
@@ -1571,7 +1377,6 @@ function drawItMarker() {
     const s = renderSnakes.find(x => x.id === itPlayerId);
     if (!s) return;
     const pulse = 0.7 + 0.3 * Math.sin(Date.now() / 220);
-    // Red pulsing ring around head
     ctx.save();
     ctx.shadowColor = '#f85149';
     ctx.shadowBlur = 18;
@@ -1581,7 +1386,6 @@ function drawItMarker() {
     ctx.arc(s.x, s.y, 22, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
-    // 👹 hovering above head
     ctx.font = "26px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -1616,7 +1420,7 @@ function drawActiveEmotes() {
         if (now > e.until) { activeEmotes.delete(id); continue; }
         const s = renderSnakes.find(x => x.id === id);
         if (!s) continue;
-        const age = 1 - (e.until - now) / 2200;       // 0 → 1
+        const age = 1 - (e.until - now) / 2200;
         const lift = age * 28;
         const alpha = age < 0.85 ? 1 : (1 - age) / 0.15;
         ctx.save();
@@ -1635,7 +1439,7 @@ function drawUrgencyVignette() {
     if (settings.reduceMotion) return;
     const remaining = Math.max(0, phaseEndsAt - Date.now()) / 1000;
     if (remaining > 30) return;
-    const intensity = Math.min(1, (30 - remaining) / 30);  // 0 → 1 as it runs out
+    const intensity = Math.min(1, (30 - remaining) / 30);
     const cx = canvas.width / 2, cy = canvas.height / 2;
     const innerR = Math.min(canvas.width, canvas.height) * (0.55 - 0.15 * intensity);
     const outerR = Math.max(canvas.width, canvas.height) * 0.75;
@@ -1647,7 +1451,6 @@ function drawUrgencyVignette() {
 }
 
 function updateTimerDisplay() {
-    let lastSec = null;
     if (phase === "playing" && phaseEndsAt) {
         const sec = Math.max(0, Math.ceil((phaseEndsAt - Date.now()) / 1000));
         roundLabelEl.textContent = `Round ${roundNumber}`;
@@ -1660,7 +1463,6 @@ function updateTimerDisplay() {
             roundTimeEl.textContent = `${m}:${String(s).padStart(2, "0")}`;
             roundTimeEl.classList.remove("urgent");
         }
-        // Countdown tick sound for the last 5 seconds
         if (sec <= 5 && sec > 0 && sec !== updateTimerDisplay._lastTick) {
             updateTimerDisplay._lastTick = sec;
             sndCountdown();
@@ -1677,7 +1479,6 @@ function updateTimerDisplay() {
         roundTimeEl.classList.remove("urgent");
         updateTimerDisplay._lastTick = null;
     }
-    // Spectator overlay: visible when eliminated and watching someone live.
     if (meEliminated && phase === "playing" && spectatingId != null) {
         const target = renderSnakes.find(s => s.id === spectatingId);
         spectatorNameEl.textContent = target ? (target.name || "anon") : "—";
@@ -1698,50 +1499,27 @@ function drawEffectBadges() {
     if (!items.length) return;
 
     const x0 = canvas.width - 170;
-    let y = 220;  // below the sidebar
+    let y = 220;
     for (const it of items) {
-        // background
         ctx.fillStyle = "rgba(13,17,23,0.85)";
         ctx.fillRect(x0, y, 158, 30);
         ctx.strokeStyle = it.color;
         ctx.lineWidth = 1.5;
         ctx.strokeRect(x0 + 0.5, y + 0.5, 157, 29);
-        // glyph
         ctx.fillStyle = it.color;
         ctx.font = "bold 18px Arial";
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
         ctx.fillText(it.label, x0 + 8, y + 15);
-        // remaining time text
         ctx.fillStyle = "#ffffff";
         ctx.font = "bold 12px Arial";
         ctx.fillText(`${(myEffects[it.key] / 1000).toFixed(1)}s`, x0 + 30, y + 15);
-        // progress bar
         const w = 110 * (myEffects[it.key] / it.total);
         ctx.fillStyle = it.color;
         ctx.fillRect(x0 + 70, y + 22, w, 4);
         y += 36;
     }
     ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
-}
-
-// ---------------- grasslands + walls + food + snake ----------------
-function hash(x, y) {
-    let h = (x * 374761393) ^ (y * 668265263);
-    h = (h ^ (h >>> 13)) >>> 0;
-    return (h * 1274126177) >>> 0;
-}
-function noise2d(x, y) {
-    const x0 = Math.floor(x), y0 = Math.floor(y);
-    const fx = x - x0, fy = y - y0;
-    const ex = fx * fx * (3 - 2 * fx);
-    const ey = fy * fy * (3 - 2 * fy);
-    const a = (hash(x0,     y0)     & 0xffffff) / 0xffffff;
-    const b = (hash(x0 + 1, y0)     & 0xffffff) / 0xffffff;
-    const c = (hash(x0,     y0 + 1) & 0xffffff) / 0xffffff;
-    const d = (hash(x0 + 1, y0 + 1) & 0xffffff) / 0xffffff;
-    return a * (1 - ex) * (1 - ey) + b * ex * (1 - ey)
-         + c * (1 - ex) * ey       + d * ex * ey;
 }
 
 // ---------- Terrain dispatcher ----------
@@ -1756,7 +1534,7 @@ function drawTerrain(cam) {
 
 // ---------- Shared terrain helpers ----------
 // Visible world width/height depends on zoom (camera.z): with z=0.5 we see 2× the
-// canvas in world coords. All visible-area computations divide by cam.z.
+// canvas in world coords.
 function camWorldW(cam) { return canvas.width  / (cam.z || 1); }
 function camWorldH(cam) { return canvas.height / (cam.z || 1); }
 
@@ -1994,24 +1772,19 @@ function drawCacti(arr) {
     for (let i = 0; i < arr.length; i += 3) {
         const x = arr[i], y = arr[i + 1], h = arr[i + 2];
         const tall = 14 + ((h >>> 4) & 0x7);
-        // ground shadow
         ctx.fillStyle = "rgba(0,0,0,0.28)";
         ctx.beginPath(); ctx.ellipse(x + 2, y + 1, 7, 2.4, 0, 0, Math.PI * 2); ctx.fill();
-        // dark outline
         ctx.fillStyle = "#2a5328";
         ctx.fillRect(x - 4, y - tall, 8, tall);
         ctx.beginPath(); ctx.arc(x, y - tall, 4, 0, Math.PI * 2); ctx.fill();
-        // body
         ctx.fillStyle = "#3a6b3a";
         ctx.fillRect(x - 3, y - tall, 6, tall);
         ctx.beginPath(); ctx.arc(x, y - tall, 3, 0, Math.PI * 2); ctx.fill();
-        // ribs
         ctx.strokeStyle = "#2c5b2e"; ctx.lineWidth = 0.6;
         ctx.beginPath();
         ctx.moveTo(x - 1, y - tall + 1); ctx.lineTo(x - 1, y - 2);
         ctx.moveTo(x + 1, y - tall + 1); ctx.lineTo(x + 1, y - 2);
         ctx.stroke();
-        // 50% chance: one arm
         if ((h >>> 8) & 1) {
             const side = ((h >>> 9) & 1) ? -1 : 1;
             const armY = y - tall * 0.55;
@@ -2023,7 +1796,6 @@ function drawCacti(arr) {
     }
 }
 function drawDriedBushes(arr) {
-    // Tumbleweed-like radial twigs
     ctx.strokeStyle = "#6a4a25";
     ctx.lineWidth = 1.0;
     ctx.lineCap = "round";
@@ -2038,7 +1810,6 @@ function drawDriedBushes(arr) {
         }
     }
     ctx.stroke();
-    // small darker accent dots in the center
     ctx.fillStyle = "rgba(60,40,20,0.7)";
     for (let i = 0; i < arr.length; i += 3) {
         ctx.beginPath(); ctx.arc(arr[i], arr[i + 1], 0.8, 0, Math.PI * 2); ctx.fill();
@@ -2074,7 +1845,6 @@ function drawSnowTerrain(cam) {
         const kind = h & 0xff;
         const px = cx + (((h >>> 8) & 0xff) / 255) * cell;
         const py = cy + (((h >>> 16) & 0xff) / 255) * cell;
-        // scattered sparkles
         const sparkN = 1 + ((h >>> 24) & 1);
         for (let b = 0; b < sparkN; b++) {
             const hb = hash(cx + b * 17, cy + b * 23);
@@ -2090,14 +1860,12 @@ function drawSnowTerrain(cam) {
     drawSparkles(sparkles);
 }
 function drawSnowDrifts(arr) {
-    // soft shadow under drift
     ctx.fillStyle = "rgba(100,130,180,0.18)";
     for (let i = 0; i < arr.length; i += 3) {
         const x = arr[i], y = arr[i + 1], h = arr[i + 2];
         const w = 14 + ((h >>> 4) & 0x7);
         ctx.beginPath(); ctx.ellipse(x, y + 2, w * 0.9, 3, 0, 0, Math.PI * 2); ctx.fill();
     }
-    // bright snow hump (top semicircle)
     ctx.fillStyle = "#ffffff";
     for (let i = 0; i < arr.length; i += 3) {
         const x = arr[i], y = arr[i + 1], h = arr[i + 2];
@@ -2108,7 +1876,6 @@ function drawSnowDrifts(arr) {
         ctx.closePath();
         ctx.fill();
     }
-    // subtle blue shading along bottom edge
     ctx.fillStyle = "rgba(180,200,225,0.45)";
     for (let i = 0; i < arr.length; i += 3) {
         const x = arr[i], y = arr[i + 1], h = arr[i + 2];
@@ -2143,13 +1910,10 @@ function drawFrozenRocks(arr) {
     for (let i = 0; i < arr.length; i += 3) {
         const x = arr[i], y = arr[i + 1], h = arr[i + 2];
         const r = 3 + ((h >>> 24) & 3) * 0.5;
-        // shadow
         ctx.fillStyle = "rgba(70,100,140,0.25)";
         ctx.beginPath(); ctx.ellipse(x + 1, y + 2, r * 1.4, r * 0.6, 0, 0, Math.PI * 2); ctx.fill();
-        // rock body
         ctx.fillStyle = "#5a6b80";
         ctx.beginPath(); ctx.ellipse(x, y, r * 1.3, r * 0.9, 0, 0, Math.PI * 2); ctx.fill();
-        // snow cap on top
         ctx.fillStyle = "#ffffff";
         ctx.beginPath();
         ctx.ellipse(x, y - r * 0.35, r * 1.0, r * 0.32, 0, Math.PI, Math.PI * 2);
@@ -2188,13 +1952,10 @@ function drawLavaPools(arr) {
     for (let i = 0; i < arr.length; i += 3) {
         const x = arr[i], y = arr[i + 1], h = arr[i + 2];
         const r = 8 + ((h >>> 24) & 7);
-        // outer glow
         ctx.fillStyle = "rgba(255,100,40,0.18)";
         ctx.beginPath(); ctx.ellipse(x, y, r * 1.9, r * 1.3, 0, 0, Math.PI * 2); ctx.fill();
-        // main lava
         ctx.fillStyle = "#cd3a1a";
         ctx.beginPath(); ctx.ellipse(x, y, r * 1.2, r * 0.9, 0, 0, Math.PI * 2); ctx.fill();
-        // bright hot center
         ctx.fillStyle = "#ffb84a";
         ctx.beginPath(); ctx.ellipse(x, y, r * 0.55, r * 0.4, 0, 0, Math.PI * 2); ctx.fill();
     }
@@ -2226,10 +1987,8 @@ function drawObsidianShards(arr) {
     for (let i = 0; i < arr.length; i += 3) {
         const x = arr[i], y = arr[i + 1], h = arr[i + 2];
         const r = 3 + ((h >>> 24) & 3);
-        // shadow
         ctx.fillStyle = "rgba(0,0,0,0.4)";
         ctx.beginPath(); ctx.ellipse(x + 1, y + 2, r * 1.4, r * 0.6, 0, 0, Math.PI * 2); ctx.fill();
-        // shard polygon
         ctx.fillStyle = "#15080a";
         ctx.beginPath();
         ctx.moveTo(x, y - r);
@@ -2238,21 +1997,18 @@ function drawObsidianShards(arr) {
         ctx.lineTo(x - r * 0.8, y + r * 0.4);
         ctx.closePath();
         ctx.fill();
-        // red rim
         ctx.strokeStyle = "rgba(220,80,40,0.55)";
         ctx.lineWidth = 0.6;
         ctx.stroke();
     }
 }
 function drawEmbers(arr) {
-    // outer glow pass
     ctx.fillStyle = "rgba(255,150,60,0.45)";
     for (let i = 0; i < arr.length; i += 3) {
         const x = arr[i], y = arr[i + 1], h = arr[i + 2];
         const r = 0.9 + ((h >>> 4) & 1) * 0.6;
         ctx.beginPath(); ctx.arc(x, y, r * 3, 0, Math.PI * 2); ctx.fill();
     }
-    // bright cores
     ctx.fillStyle = "#ffd680";
     for (let i = 0; i < arr.length; i += 3) {
         const x = arr[i], y = arr[i + 1], h = arr[i + 2];
@@ -2334,21 +2090,17 @@ function drawFood(f) {
         ctx.shadowBlur = 0;
         return;
     }
-    // Power-up: larger, pulsing glow, distinct color + glyph
     const c = powerupColor(type);
     const pulse = 0.85 + 0.15 * Math.sin(Date.now() / 200 + f.id);
     const r = 11 * pulse;
     ctx.save();
     ctx.shadowColor = c;
     ctx.shadowBlur = 16;
-    // Outer glow ring
     ctx.fillStyle = c;
     ctx.beginPath(); ctx.arc(f.x, f.y, r, 0, Math.PI * 2); ctx.fill();
-    // Inner bright spot
     ctx.shadowBlur = 0;
     ctx.fillStyle = '#ffffff';
     ctx.beginPath(); ctx.arc(f.x, f.y, r * 0.45, 0, Math.PI * 2); ctx.fill();
-    // Glyph
     ctx.fillStyle = c;
     ctx.font = `bold ${Math.round(r * 1.3)}px Arial`;
     ctx.textAlign = 'center';
@@ -2372,13 +2124,11 @@ function segmentColorRaw(baseColor, pattern, i, total) {
 function drawSnake(s, isMe) {
     const total = s.body.length;
     if (total === 0) { drawSnakeHead(s, isMe); return; }
-    // Team mode overrides base color
     if (s.team && (s.team === 'red' || s.team === 'blue')) {
         s.color = s.team === 'red' ? '#f85149' : '#58a6ff';
     }
     const pattern = s.pattern || "solid";
 
-    // Shield ring: pulsing halo around the snake's head
     if (s.shield) {
         ctx.save();
         const t = Date.now() / 250;
@@ -2389,17 +2139,15 @@ function drawSnake(s, isMe) {
         ctx.stroke();
         ctx.restore();
     }
-    // Gold aura: golden glow around the head
     if (s.gold) {
         ctx.save();
         ctx.shadowColor = '#facc15';
         ctx.shadowBlur = 18;
-        ctx.fillStyle = 'rgba(250, 204, 21, 0.001)';  // invisible fill, just for the glow
+        ctx.fillStyle = 'rgba(250, 204, 21, 0.001)';
         ctx.beginPath(); ctx.arc(s.x, s.y, 16, 0, Math.PI * 2); ctx.fill();
         ctx.restore();
     }
 
-    // --- Pre-compute per-segment radii + perpendicular vectors ---
     const radii = new Array(total);
     const perp = new Array(total);
     for (let i = 0; i < total; i++) {
@@ -2413,7 +2161,6 @@ function drawSnake(s, isMe) {
         perp[i] = { nx: -dy / len, ny: dx / len };
     }
 
-    // --- 1. Smooth body fill underneath (continuous shape, no balls-on-a-string) ---
     ctx.beginPath();
     const hp = { nx: -Math.sin(s.angle), ny: Math.cos(s.angle) };
     ctx.moveTo(s.x + hp.nx * 11, s.y + hp.ny * 11);
@@ -2429,7 +2176,6 @@ function drawSnake(s, isMe) {
     ctx.fillStyle = shade(s.color, -22);
     ctx.fill();
 
-    // --- 2. Pattern segments on top (alternating colors / stripes / rainbow) ---
     for (let i = total - 1; i >= 0; i--) {
         ctx.beginPath();
         ctx.arc(s.body[i].x, s.body[i].y, radii[i] * 0.94, 0, Math.PI * 2);
@@ -2437,7 +2183,6 @@ function drawSnake(s, isMe) {
         ctx.fill();
     }
 
-    // --- 3. Subtle dark outline ---
     ctx.beginPath();
     ctx.moveTo(s.x + hp.nx * 11, s.y + hp.ny * 11);
     for (let i = 0; i < total; i++) {
@@ -2451,7 +2196,6 @@ function drawSnake(s, isMe) {
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    // --- 4. Belly highlight (lighter line down the spine) ---
     ctx.beginPath();
     ctx.moveTo(s.x, s.y);
     for (let i = 0; i < total; i++) ctx.lineTo(s.body[i].x, s.body[i].y);
@@ -2461,13 +2205,9 @@ function drawSnake(s, isMe) {
     ctx.lineJoin = "round";
     ctx.stroke();
 
-    // --- 5. Tongue (flickers, only when no avatar) ---
     drawSnakeTongue(s);
-
-    // --- 6. Head ---
     drawSnakeHead(s, isMe);
 
-    // --- 7. Name tag ---
     if (s.name) {
         ctx.fillStyle = isMe ? "#ffffff" : "#c9d1d9";
         ctx.font = "bold 12px Arial";
@@ -2506,7 +2246,6 @@ function drawSnakeHead(s, isMe) {
     const img = playerImages.get(s.id);
     const hasImage = img && img.complete && img.naturalWidth > 0;
 
-    // Head outline + base
     ctx.beginPath();
     ctx.arc(0, 0, 14, 0, Math.PI * 2);
     ctx.fillStyle = shade(s.color, 10);
@@ -2540,16 +2279,13 @@ function drawSnakeHead(s, isMe) {
         ctx.fillText(s.avatar, 0, 1);
         ctx.restore();
     } else {
-        // Default snake face: eyes + nostrils
         ctx.rotate(s.angle);
-        // Eyes (white sclera with dark pupil)
         ctx.fillStyle = "#ffffff";
         ctx.beginPath(); ctx.arc(5, -6, 3.2, 0, Math.PI*2); ctx.fill();
         ctx.beginPath(); ctx.arc(5,  6, 3.2, 0, Math.PI*2); ctx.fill();
         ctx.fillStyle = "#1a1a1a";
         ctx.beginPath(); ctx.arc(6, -6, 1.6, 0, Math.PI*2); ctx.fill();
         ctx.beginPath(); ctx.arc(6,  6, 1.6, 0, Math.PI*2); ctx.fill();
-        // Nostrils
         ctx.fillStyle = "rgba(0,0,0,0.5)";
         ctx.beginPath(); ctx.arc(11, -2, 0.8, 0, Math.PI*2); ctx.fill();
         ctx.beginPath(); ctx.arc(11,  2, 0.8, 0, Math.PI*2); ctx.fill();
@@ -2558,8 +2294,6 @@ function drawSnakeHead(s, isMe) {
 }
 
 function renderLeaderboard() {
-    // Hidden during active gameplay; reappears at round end (intermission)
-    // and stays visible in lobby/between-rounds states.
     if (phase === "playing") {
         leaderboardEl.style.display = "none";
         return;
@@ -2574,39 +2308,10 @@ function renderLeaderboard() {
     leaderboardRowsEl.innerHTML = rows;
 }
 
-function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-function shade(hex, delta) {
-    if (!hex.startsWith("#")) return hex;
-    const n = parseInt(hex.slice(1), 16);
-    const r = Math.max(0, Math.min(255, ((n >> 16) & 0xff) + delta));
-    const g = Math.max(0, Math.min(255, ((n >> 8) & 0xff) + delta));
-    const b = Math.max(0, Math.min(255, (n & 0xff) + delta));
-    return `rgb(${r},${g},${b})`;
-}
-function hexToHsl(hex) {
-    if (!hex.startsWith("#")) return { h: 120, s: 50, l: 50 };
-    const r = parseInt(hex.slice(1, 3), 16) / 255;
-    const g = parseInt(hex.slice(3, 5), 16) / 255;
-    const b = parseInt(hex.slice(5, 7), 16) / 255;
-    const max = Math.max(r, g, b), min = Math.min(r, g, b);
-    const l = (max + min) / 2;
-    if (max === min) return { h: 0, s: 0, l: l * 100 };
-    const d = max - min;
-    const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-    let h;
-    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0));
-    else if (max === g) h = (b - r) / d + 2;
-    else h = (r - g) / d + 4;
-    return { h: h * 60, s: s * 100, l: l * 100 };
-}
-
 // ---------------- fullscreen canvas ----------------
 function resizeCanvas() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
-    // Keep mouse target somewhere sensible until first move
     if (!mouse.set) {
         mouse.x = canvas.width / 2;
         mouse.y = canvas.height / 2 - 100;
@@ -2621,10 +2326,12 @@ drawSkinPreview();
 connect();
 render();
 
-// Register the service worker so the page is installable as a PWA.
+// Register the service worker so the page is installable as a PWA. Resolved
+// against the document URL (the page itself), so '/sw.js' lands at site root
+// regardless of where this module lives under js/.
 if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-        navigator.serviceWorker.register('sw.js').catch(err => {
+        navigator.serviceWorker.register('/sw.js').catch(err => {
             console.warn('SW registration failed:', err);
         });
     });
