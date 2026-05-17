@@ -3,6 +3,7 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { Redis } from '@upstash/redis';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -128,6 +129,73 @@ const httpServer = http.createServer((req, res) => {
 });
 
 const wss = new WebSocketServer({ server: httpServer });
+
+// -------- Optional Redis persistence --------
+// Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN to keep rooms alive
+// across server restarts. Without these, rooms live only in memory (default).
+// Only room metadata is persisted; live game state (positions, food) is not —
+// players who were mid-round are simply disconnected, and on first re-join the
+// room reopens in its lobby phase with the new joiner as owner.
+let redis = null;
+if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+    redis = new Redis({
+        url: process.env.UPSTASH_REDIS_REST_URL,
+        token: process.env.UPSTASH_REDIS_REST_TOKEN,
+    });
+    console.log('redis: persistence enabled');
+} else {
+    console.log('redis: env vars not set, using in-memory only (rooms reset on restart)');
+}
+async function persistRoom(room) {
+    if (!redis) return;
+    try {
+        const meta = {
+            id: room.id, name: room.name, ownerId: room.ownerId,
+            mode: room.mode, mapId: room.mapId,
+        };
+        await redis.set(`room:${room.id}`, JSON.stringify(meta));
+        await redis.sadd('rooms', room.id);
+    } catch (err) { console.error('persistRoom failed:', err.message); }
+}
+async function deletePersistedRoom(roomId) {
+    if (!redis) return;
+    try {
+        await redis.del(`room:${roomId}`);
+        await redis.srem('rooms', roomId);
+    } catch (err) { console.error('deletePersistedRoom failed:', err.message); }
+}
+async function loadPersistedRooms() {
+    if (!redis) return;
+    try {
+        const ids = await redis.smembers('rooms');
+        for (const id of ids) {
+            const raw = await redis.get(`room:${id}`);
+            if (!raw) continue;
+            // redis.get returns string-or-object depending on SDK version
+            const meta = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            if (!meta || !meta.id) continue;
+            rooms.set(meta.id, {
+                id: meta.id,
+                name: meta.name || `Room ${meta.id}`,
+                ownerId: meta.ownerId || 0,
+                mapId: meta.mapId || 'grasslands',
+                mode: meta.mode || 'ffa',
+                members: new Map(),
+                phase: 'lobby',
+                phaseEndsAt: 0,
+                roundStartedAt: 0,
+                roundNumber: 0,
+                lastStandings: null,
+                food: [],
+                nextFoodId: 1,
+                safeZone: null,
+                obstacles: [],
+                hill: null,
+            });
+        }
+        console.log(`redis: loaded ${rooms.size} rooms from persistence`);
+    } catch (err) { console.error('loadPersistedRooms failed:', err.message); }
+}
 
 const sockets = new Map();   // ws -> { snake, roomId|null }
 const rooms = new Map();     // roomId -> room
@@ -759,6 +827,7 @@ function createRoom(ws, name) {
     if (!ctx || ctx.roomId) return;
     const room = makeRoom(name || `${ctx.snake.name}'s Room`, ctx.snake.id);
     rooms.set(room.id, room);
+    persistRoom(room);
     room.members.set(ws, ctx.snake);
     ctx.roomId = room.id;
     ctx.snake.ready = false;
@@ -933,6 +1002,12 @@ function joinRoom(ws, roomId) {
     if (!room) { ws.send(JSON.stringify({ type: 'error', message: 'Room not found' })); return; }
     if (room.phase !== 'lobby') { ws.send(JSON.stringify({ type: 'error', message: 'Game already in progress' })); return; }
     if (room.members.size >= MAX_ROOM_PLAYERS) { ws.send(JSON.stringify({ type: 'error', message: 'Room is full' })); return; }
+    // If the room is empty (e.g., restored from Redis after a restart), the
+    // first joiner becomes the new owner so the room is usable again.
+    if (room.members.size === 0) {
+        room.ownerId = ctx.snake.id;
+        persistRoom(room);
+    }
     room.members.set(ws, ctx.snake);
     ctx.roomId = room.id;
     ctx.snake.ready = false;
@@ -969,6 +1044,7 @@ function leaveRoom(ws, sendLeftConfirmation = true) {
         room.members.delete(ws);
         if (room.members.size === 0) {
             rooms.delete(room.id);
+            deletePersistedRoom(room.id);
             console.log(`room ${room.id} closed (empty)`);
         } else if (room.ownerId === ctx.snake.id) {
             // Owner left -> close room, kick the rest
@@ -981,6 +1057,7 @@ function leaveRoom(ws, sendLeftConfirmation = true) {
                 }
             }
             rooms.delete(room.id);
+            deletePersistedRoom(room.id);
             console.log(`room ${room.id} closed (owner left)`);
         }
     }
@@ -1077,12 +1154,14 @@ wss.on('connection', (ws) => {
                 if (room && room.phase === 'lobby' && ctx.snake.id === room.ownerId
                     && typeof msg.mapId === 'string' && MAPS_BY_ID.has(msg.mapId)) {
                     room.mapId = msg.mapId;
+                    persistRoom(room);
                 }
                 break;
             case 'setMode':
                 if (room && room.phase === 'lobby' && ctx.snake.id === room.ownerId
                     && typeof msg.mode === 'string' && MODES.has(msg.mode)) {
                     room.mode = msg.mode;
+                    persistRoom(room);
                 }
                 break;
             case 'setBoost':
@@ -1111,6 +1190,9 @@ wss.on('connection', (ws) => {
         }
     });
 });
+
+// Restore rooms from Redis (no-op when env vars aren't set).
+await loadPersistedRooms();
 
 httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`snake server listening on :${PORT}`);

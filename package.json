@@ -7,6 +7,7 @@
     "build:icons": "node scripts/build-icons.mjs"
   },
   "dependencies": {
+    "@upstash/redis": "^1.38.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
