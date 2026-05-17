@@ -1326,6 +1326,23 @@ function drawSkinPreview() {
 // ---------------- lobby panel ----------------
 function renderLobby() {
     if (!currentRoom) return;
+
+    // The server broadcasts lobbyState at 30 Hz. Re-running this function
+    // every tick wipes the DOM via innerHTML — that destroys cards mid-click
+    // and the browser drops the click event (mousedown on old element,
+    // mouseup on new element). Cache the inputs and skip work when unchanged.
+    const dataKey = JSON.stringify({
+        n:  currentRoom.name,
+        o:  currentRoom.ownerId,
+        m:  currentRoom.mapId,
+        g:  currentRoom.mode,
+        p:  lobbyPlayers,
+        a:  availableMaps.map(m => m.id),
+        r:  isReady,
+    });
+    if (renderLobby._lastKey === dataKey) return;
+    renderLobby._lastKey = dataKey;
+
     lobbyRoomNameEl.textContent = currentRoom.name || "Room";
     lobbyPlayerCountEl.textContent = lobbyPlayers.length;
 
