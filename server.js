@@ -50,6 +50,11 @@ const POWERUP_EFFECTS = {
 
 // Game modes — owner picks in lobby
 const MODES = new Set(['ffa', 'lastman', 'teams']);
+
+// Bots
+const BOT_RESPAWN_MS = 3000;
+const BOT_NAMES = ['Boop', 'Zappy', 'Glide', 'Nibble', 'Hiss', 'Coilio', 'Slink', 'Fang', 'Wiggle', 'Snap'];
+const BOT_AVATARS = ['🤖', '🐍', '🐉', '🦖', '👾', '🦊', '🦄', '🐺'];
 const TEAM_COLORS = { red: '#f85149', blue: '#58a6ff' };
 
 // LSS shrinking-zone parameters
@@ -229,13 +234,17 @@ function killSnake(room, s, reason, ws) {
             'regular',
         ));
     }
-    if (ws && ws.readyState === 1) {
+    if (ws && typeof ws !== 'string' && ws.readyState === 1) {
         ws.send(JSON.stringify({
             type: 'died',
             reason,
             finalScore: s.score,
             eliminated: !!s.eliminated,
         }));
+    }
+    // Bots auto-respawn in non-elimination modes
+    if (s.bot && room.mode !== 'lastman') {
+        s.respawnAt = Date.now() + BOT_RESPAWN_MS;
     }
 }
 
@@ -470,6 +479,7 @@ function buildLobbySnapshot(room) {
             id: s.id, name: s.name, avatar: s.avatar,
             color: s.color, pattern: s.pattern,
             ready: s.ready, isOwner: s.id === room.ownerId,
+            isBot: !!s.bot,
         });
     }
     const map = mapOf(room);
@@ -488,12 +498,22 @@ function buildLobbySnapshot(room) {
 }
 
 function buildGameSnapshotFor(room, viewer) {
-    const cx = viewer.x, cy = viewer.y;
+    // Eliminated viewers spectate — pick the first alive snake as their focal
+    // point so the view radius and snapshot are centered on something they can
+    // actually watch (otherwise we'd use their last position before death).
+    let specTarget = null;
+    if (viewer.eliminated) {
+        for (const [, s] of room.members) {
+            if (s.alive) { specTarget = s; break; }
+        }
+    }
+    const cx = specTarget ? specTarget.x : viewer.x;
+    const cy = specTarget ? specTarget.y : viewer.y;
     const r2 = (VIEW_RADIUS + 200) ** 2;
     const snakes = [];
     for (const [, s] of room.members) {
         if (!s.alive) continue;
-        if (s !== viewer) {
+        if (s !== viewer && s !== specTarget) {
             const dx = s.x - cx, dy = s.y - cy;
             if (dx * dx + dy * dy > r2) continue;
         }
@@ -543,6 +563,7 @@ function buildGameSnapshotFor(room, viewer) {
         map: { id: map.id, name: map.name, theme: map.theme, size: map.size },
         myEffects,
         meEliminated: !!viewer.eliminated,
+        spectatingId: specTarget ? specTarget.id : null,
         safeZone: room.safeZone,
     };
 }
@@ -550,9 +571,13 @@ function buildGameSnapshotFor(room, viewer) {
 function broadcastRoom(room) {
     if (room.phase === 'lobby') {
         const snap = JSON.stringify(buildLobbySnapshot(room));
-        for (const [ws] of room.members) if (ws.readyState === 1) ws.send(snap);
+        for (const [ws] of room.members) {
+            if (typeof ws === 'string') continue;     // bots have string keys
+            if (ws.readyState === 1) ws.send(snap);
+        }
     } else {
         for (const [ws, s] of room.members) {
+            if (typeof ws === 'string') continue;
             if (ws.readyState !== 1) continue;
             ws.send(JSON.stringify(buildGameSnapshotFor(room, s)));
         }
@@ -596,6 +621,9 @@ function tick() {
     const now = Date.now();
     for (const room of rooms.values()) {
         if (room.phase === 'playing') {
+            // Run bot AI before physics so the bot's targetX/Y are fresh.
+            for (const [, s] of room.members) if (s.bot) updateBotAI(room, s);
+            tickBotRespawns(room, now);
             for (const [ws, s] of room.members) updateSnake(room, s, ws, now);
             checkSnakeCollisions(room, now);
             checkFood(room, now);
@@ -635,6 +663,116 @@ function createRoom(ws, name) {
     ws.send(JSON.stringify({ type: 'joinedRoom', roomId: room.id, ownerId: room.ownerId }));
     console.log(`room ${room.id} created by ${ctx.snake.name}`);
     broadcastRoomList();
+}
+
+// ---------------- Bots ----------------
+function makeBot() {
+    return {
+        id: nextPlayerId++,
+        name: 'Bot ' + BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)],
+        avatar: BOT_AVATARS[Math.floor(Math.random() * BOT_AVATARS.length)],
+        avatarImage: null,
+        color: COLORS[Math.floor(Math.random() * COLORS.length)],
+        pattern: 'solid',
+        x: 0, y: 0, angle: 0, body: [],
+        targetX: 0, targetY: 0,
+        alive: false,
+        score: 0,
+        growthQueue: 0,
+        ready: true,
+        bot: true,
+        respawnAt: 0,
+        boosting: false,
+        boostTicks: 0,
+        goldUntil: 0, shieldUntil: 0, speedUntil: 0, magnetUntil: 0,
+        team: null,
+        eliminated: false,
+    };
+}
+
+function addBotToRoom(room) {
+    if (room.members.size >= MAX_ROOM_PLAYERS) return;
+    const bot = makeBot();
+    room.members.set('bot_' + bot.id, bot);
+    console.log(`room ${room.id}: bot ${bot.name} added (${room.members.size}/${MAX_ROOM_PLAYERS})`);
+}
+
+function removeBotFromRoom(room) {
+    let lastKey = null;
+    for (const [key, s] of room.members) if (s.bot) lastKey = key;
+    if (lastKey) {
+        const bot = room.members.get(lastKey);
+        room.members.delete(lastKey);
+        console.log(`room ${room.id}: bot ${bot.name} removed`);
+    }
+}
+
+function updateBotAI(room, bot) {
+    if (!bot.alive) return;
+    // Pick nearest food as target.
+    let nx = bot.x + Math.cos(bot.angle) * 200;
+    let ny = bot.y + Math.sin(bot.angle) * 200;
+    let minD2 = Infinity;
+    for (const f of room.food) {
+        const dx = f.x - bot.x, dy = f.y - bot.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < minD2) { minD2 = d2; nx = f.x; ny = f.y; }
+    }
+    bot.targetX = nx;
+    bot.targetY = ny;
+
+    // LSS — steer back toward center if near the shrinking wall.
+    if (room.mode === 'lastman' && room.safeZone) {
+        const dx = bot.x - room.safeZone.cx;
+        const dy = bot.y - room.safeZone.cy;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d > room.safeZone.r - 100) {
+            bot.targetX = room.safeZone.cx;
+            bot.targetY = room.safeZone.cy;
+        }
+    } else {
+        // Other modes: steer away from rect walls.
+        const size = mapOf(room).size;
+        const m = 120;
+        if (bot.x < m || bot.x > size - m || bot.y < m || bot.y > size - m) {
+            bot.targetX = size / 2;
+            bot.targetY = size / 2;
+        }
+    }
+}
+
+function tickBotRespawns(room, now) {
+    if (room.mode === 'lastman') return;  // no respawn in elimination
+    for (const [, s] of room.members) {
+        if (s.bot && !s.alive && s.respawnAt && now >= s.respawnAt) {
+            resetSnake(s, room);
+            s.respawnAt = 0;
+        }
+    }
+}
+
+function quickPlay(ws) {
+    const ctx = sockets.get(ws);
+    if (!ctx || ctx.roomId) return;
+    // Find the first FFA room in lobby phase with space.
+    let target = null;
+    for (const room of rooms.values()) {
+        if (room.mode === 'ffa' && room.phase === 'lobby' && room.members.size < MAX_ROOM_PLAYERS) {
+            target = room; break;
+        }
+    }
+    if (target) {
+        joinRoom(ws, target.id);
+    } else {
+        // No joinable room — create one and become its owner.
+        createRoom(ws, `Quick Match`);
+    }
+    // Auto-ready so the host (or you, if you just created) can hit Start fast.
+    const fresh = sockets.get(ws);
+    if (fresh && fresh.roomId) {
+        const room = rooms.get(fresh.roomId);
+        if (room && room.phase === 'lobby') fresh.snake.ready = true;
+    }
 }
 
 function joinRoom(ws, roomId) {
@@ -748,6 +886,15 @@ wss.on('connection', (ws) => {
                 break;
             case 'joinRoom':
                 joinRoom(ws, msg.roomId);
+                break;
+            case 'quickPlay':
+                quickPlay(ws);
+                break;
+            case 'addBot':
+                if (room && room.phase === 'lobby' && ctx.snake.id === room.ownerId) addBotToRoom(room);
+                break;
+            case 'removeBot':
+                if (room && room.phase === 'lobby' && ctx.snake.id === room.ownerId) removeBotFromRoom(room);
                 break;
             case 'leaveRoom':
                 leaveRoom(ws);

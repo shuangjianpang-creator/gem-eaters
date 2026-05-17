@@ -321,6 +321,47 @@
         }
         #createRoomRow input { width: 180px; }
 
+        .quickPlayBig {
+            display: block;
+            width: 100%;
+            margin: 0 0 6px 0 !important;
+            padding: 14px 16px !important;
+            font-size: 17px !important;
+            font-weight: bold;
+            background: linear-gradient(180deg, #2ea043, #238636) !important;
+            box-shadow: 0 4px 14px rgba(46, 160, 67, 0.4);
+        }
+        .quickPlayBig:hover { background: linear-gradient(180deg, #3cb350, #2ea043) !important; }
+        .quickPlayHint {
+            margin: 0 0 18px 0 !important;
+            font-size: 11px;
+            color: #8b949e;
+            text-align: center;
+        }
+        .inviteBtn {
+            display: block !important;
+            margin: 0 auto 8px auto !important;
+            padding: 6px 14px !important;
+            font-size: 12px !important;
+        }
+        .inviteBtn.copied { background: #2ea043 !important; color: white; }
+
+        #spectatorOverlay {
+            position: absolute;
+            top: 60px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 15;
+            background: rgba(13, 17, 23, 0.85);
+            color: #c9d1d9;
+            padding: 6px 14px;
+            border-radius: 12px;
+            font-size: 13px;
+            border: 1px solid rgba(248, 81, 73, 0.5);
+            pointer-events: none;
+        }
+        #spectatorOverlay #spectatorName { color: #f0883e; font-weight: bold; }
+
         /* ---------- lobby ---------- */
         #lobbyHeader {
             display: flex;
@@ -351,6 +392,7 @@
         #lobbyPlayers .nm { flex: 1; }
         #lobbyPlayers .nm.me { color: #56d364; font-weight: bold; }
         #lobbyPlayers .owner { color: #d29922; font-size: 12px; }
+        #lobbyPlayers .botTag { color: #c084fc; font-size: 11px; padding: 2px 6px; background: rgba(192,132,252,0.15); border-radius: 8px; }
         #lobbyPlayers .ready { color: #56d364; font-size: 12px; }
         #lobbyPlayers .notReady { color: #8b949e; font-size: 12px; }
         #lobbyButtons { display: flex; gap: 8px; justify-content: center; }
@@ -455,6 +497,7 @@
         <span class="pill" id="status">connecting...</span>
         <span class="pill clickable" id="muteToggle" title="Mute / unmute sounds">🔊</span>
     </div>
+    <div id="spectatorOverlay" style="display:none">👁 Spectating: <span id="spectatorName">—</span></div>
 
     <div id="stage">
         <canvas id="gameCanvas"></canvas>
@@ -529,6 +572,9 @@
                 <div class="slide" id="roomsSlide" style="display:none">
                     <p id="roomsError" style="color:#f85149;display:none"></p>
 
+                    <button id="quickPlayButton" class="quickPlayBig">⚡ Quick Play</button>
+                    <p class="quickPlayHint">Skip the setup — auto-join the first open match.</p>
+
                     <h3>Available Rooms</h3>
                     <div id="roomList"></div>
 
@@ -550,6 +596,7 @@
                     <h2 id="lobbyRoomName">Room</h2>
                     <span class="badge"><span id="lobbyPlayerCount">0</span>/8 players</span>
                 </div>
+                <button id="inviteButton" class="secondary inviteBtn">🔗 Copy invite link</button>
                 <p id="lobbyError" style="color:#f85149;display:none"></p>
                 <div id="modeSelector">
                     <div class="modeHeader">
@@ -569,6 +616,8 @@
                 <div id="lobbyButtons">
                     <button id="readyButton">Get Ready</button>
                     <button id="startButton" style="display:none">Start Game</button>
+                    <button id="addBotButton" class="secondary" style="display:none">+ Bot</button>
+                    <button id="removeBotButton" class="secondary" style="display:none">− Bot</button>
                     <button id="leaveLobbyButton" class="secondary">Leave Room</button>
                 </div>
                 <div id="lobbyStatus"></div>
@@ -620,6 +669,10 @@ const skinPreviewEl = document.getElementById("skinPreview");
 
 const roomListEl = document.getElementById("roomList");
 const newRoomNameEl = document.getElementById("newRoomName");
+const quickPlayButton = document.getElementById("quickPlayButton");
+const inviteButton = document.getElementById("inviteButton");
+const URL_PARAMS = new URLSearchParams(location.search);
+const PENDING_ROOM_FROM_URL = URL_PARAMS.get("room");
 const createRoomButton = document.getElementById("createRoomButton");
 const roomsErrorEl = document.getElementById("roomsError");
 
@@ -629,6 +682,8 @@ const lobbyPlayersEl = document.getElementById("lobbyPlayers");
 const lobbyErrorEl = document.getElementById("lobbyError");
 const readyButton = document.getElementById("readyButton");
 const startButton = document.getElementById("startButton");
+const addBotButton = document.getElementById("addBotButton");
+const removeBotButton = document.getElementById("removeBotButton");
 const leaveLobbyButton = document.getElementById("leaveLobbyButton");
 const mapGridEl = document.getElementById("mapGrid");
 const mapHintEl = document.getElementById("mapHint");
@@ -636,6 +691,8 @@ const lobbyStatusEl = document.getElementById("lobbyStatus");
 const modeGridEl = document.getElementById("modeGrid");
 const modeHintEl = document.getElementById("modeHint");
 const muteToggleEl = document.getElementById("muteToggle");
+const spectatorOverlayEl = document.getElementById("spectatorOverlay");
+const spectatorNameEl = document.getElementById("spectatorName");
 const profileSlideEl = document.getElementById("profileSlide");
 const roomsSlideEl = document.getElementById("roomsSlide");
 const slideTitleEl = document.getElementById("slideTitle");
@@ -838,6 +895,7 @@ let meEliminated = false;
 let prevMyScore = 0;
 let prevFoodIds = new Set();
 let safeZone = null;   // { cx, cy, r } in LSS mode, else null
+let spectatingId = null;  // when eliminated, server tells us whose camera to use
 
 const MODES_LIST = [
     { id: 'ffa',     name: 'Free for All',        icon: '⚔️', description: 'Eat food, eat rivals. Highest score wins.' },
@@ -927,6 +985,10 @@ function handleMessage(event) {
         case "welcome":
             myId = msg.id;
             world = msg.world;
+            // If the URL had ?room=ID, auto-join that room after identity is sent.
+            if (PENDING_ROOM_FROM_URL && !currentRoom) {
+                send({ type: "joinRoom", roomId: PENDING_ROOM_FROM_URL });
+            }
             // Cache our own image locally so we render correctly even before any
             // playerImage echo from the server.
             if (myAvatarImage) {
@@ -953,6 +1015,8 @@ function handleMessage(event) {
             currentRoom = { id: msg.roomId, ownerId: msg.ownerId, name: "" };
             phase = "lobby";
             isReady = false;
+            // Sticky URL so a refresh rejoins this room.
+            try { history.replaceState(null, "", `?room=${msg.roomId}`); } catch {}
             showScreen("lobby");
             break;
         case "leftRoom":
@@ -960,6 +1024,7 @@ function handleMessage(event) {
             lobbyPlayers = [];
             phase = "none";
             isDead = false;
+            try { history.replaceState(null, "", location.pathname); } catch {}
             if (msg.reason) showRoomsError(msg.reason);
             showScreen("rooms");
             break;
@@ -988,6 +1053,7 @@ function handleMessage(event) {
             if (msg.room && msg.room.mode) currentMode = msg.room.mode;
             if (msg.myEffects) myEffects = msg.myEffects;
             meEliminated = !!msg.meEliminated;
+            spectatingId = msg.spectatingId || null;
             safeZone = msg.safeZone || null;
             applyMap(msg.map);
 
@@ -1039,6 +1105,13 @@ function handleMessage(event) {
                 if (me) spawnDeathBurst(me);
                 sndDie();
                 showDeathPanel();
+                // LSS-eliminated: dismiss the panel after a brief moment so
+                // they can watch the rest of the round as a spectator.
+                if (meEliminated) {
+                    setTimeout(() => {
+                        if (meEliminated && phase === "playing") showScreen("none");
+                    }, 2500);
+                }
             }
             break;
         case "error":
@@ -1110,6 +1183,28 @@ createRoomButton.addEventListener("click", () => {
     const name = newRoomNameEl.value.trim();
     send({ type: "createRoom", name });
     newRoomNameEl.value = "";
+});
+
+quickPlayButton.addEventListener("click", () => {
+    commitIdentity();
+    send({ type: "quickPlay" });
+});
+
+inviteButton.addEventListener("click", async () => {
+    if (!currentRoom) return;
+    const url = `${location.origin}${location.pathname}?room=${currentRoom.id}`;
+    try {
+        await navigator.clipboard.writeText(url);
+        inviteButton.textContent = "✓ Copied to clipboard";
+        inviteButton.classList.add("copied");
+        setTimeout(() => {
+            inviteButton.textContent = "🔗 Copy invite link";
+            inviteButton.classList.remove("copied");
+        }, 1800);
+    } catch {
+        // Older browsers / no permission: select-and-prompt fallback
+        prompt("Copy this link to invite friends:", url);
+    }
 });
 
 nameInput.addEventListener("input", () => {
@@ -1386,6 +1481,7 @@ function renderLobby() {
     lobbyPlayersEl.innerHTML = lobbyPlayers.map(p => {
         const isMe = p.id === myId;
         const ownerTag = p.isOwner ? `<span class="owner">👑 OWNER</span>` : "";
+        const botTag = p.isBot ? `<span class="botTag">🤖 BOT</span>` : "";
         const readyTag = p.ready
             ? `<span class="ready">✅ Ready</span>`
             : `<span class="notReady">⬜ Not ready</span>`;
@@ -1393,6 +1489,7 @@ function renderLobby() {
             <div class="swatch" style="background:${p.color}"></div>
             <div class="av">${escapeHtml(p.avatar || '')}</div>
             <div class="nm ${isMe ? 'me' : ''}">${escapeHtml(p.name)}${isMe ? ' (you)' : ''}</div>
+            ${botTag}
             ${ownerTag}
             ${readyTag}
         </div>`;
@@ -1403,6 +1500,10 @@ function renderLobby() {
 
     const amOwner = currentRoom.ownerId === myId;
     startButton.style.display = amOwner ? "" : "none";
+    addBotButton.style.display = amOwner ? "" : "none";
+    addBotButton.disabled = lobbyPlayers.length >= 8;
+    const botCount = lobbyPlayers.filter(p => p.isBot).length;
+    removeBotButton.style.display = (amOwner && botCount > 0) ? "" : "none";
     const readyCount = lobbyPlayers.filter(p => p.ready).length;
     const allReady = lobbyPlayers.length > 0 && readyCount === lobbyPlayers.length;
     startButton.disabled = !allReady;
@@ -1425,6 +1526,8 @@ readyButton.addEventListener("click", () => {
     send({ type: "setReady", ready: isReady });
 });
 startButton.addEventListener("click", () => send({ type: "startGame" }));
+addBotButton.addEventListener("click", () => send({ type: "addBot" }));
+removeBotButton.addEventListener("click", () => send({ type: "removeBot" }));
 leaveLobbyButton.addEventListener("click", () => send({ type: "leaveRoom" }));
 
 // ---------------- death + intermission panels ----------------
@@ -1477,8 +1580,18 @@ canvas.addEventListener("touchmove", (e) => {
 
 function me() { return renderSnakes.find(s => s.id === myId); }
 
+function focusSnake() {
+    // If we're eliminated and the server is pointing us at someone to spectate,
+    // follow that snake. Otherwise follow ourselves.
+    if (meEliminated && spectatingId != null) {
+        const t = renderSnakes.find(s => s.id === spectatingId);
+        if (t) return t;
+    }
+    return me();
+}
+
 function cameraOffset() {
-    const m = me();
+    const m = focusSnake();
     if (!m) return { x: world.width / 2 - canvas.width / 2, y: world.height / 2 - canvas.height / 2 };
     return { x: m.x - canvas.width / 2, y: m.y - canvas.height / 2 };
 }
@@ -1605,6 +1718,14 @@ function updateTimerDisplay() {
         roundTimeEl.textContent = "—";
         roundTimeEl.classList.remove("urgent");
         updateTimerDisplay._lastTick = null;
+    }
+    // Spectator overlay: visible when eliminated and watching someone live.
+    if (meEliminated && phase === "playing" && spectatingId != null) {
+        const target = renderSnakes.find(s => s.id === spectatingId);
+        spectatorNameEl.textContent = target ? (target.name || "anon") : "—";
+        spectatorOverlayEl.style.display = "";
+    } else {
+        spectatorOverlayEl.style.display = "none";
     }
 }
 
