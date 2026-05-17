@@ -46,43 +46,6 @@
         #ui .pill.clickable { cursor: pointer; pointer-events: auto; user-select: none; }
         #ui .pill.clickable:hover { background: rgba(33, 38, 45, 0.9); }
 
-        #boostButton {
-            position: absolute;
-            right: 26px;
-            bottom: 28px;
-            width: 96px;
-            height: 96px;
-            border-radius: 50%;
-            border: 3px solid #f0e84a;
-            background: rgba(248, 193, 30, 0.88);
-            color: #2a1a00;
-            font-size: 44px;
-            line-height: 1;
-            font-weight: bold;
-            cursor: pointer;
-            user-select: none;
-            -webkit-user-select: none;
-            -webkit-tap-highlight-color: transparent;
-            touch-action: manipulation;
-            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45), inset 0 -3px 0 rgba(0,0,0,0.18);
-            z-index: 20;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: transform 0.08s, background 0.08s, box-shadow 0.08s;
-        }
-        #boostButton.pressed {
-            background: rgba(255, 220, 90, 1);
-            transform: scale(0.92);
-            box-shadow: 0 0 22px rgba(255, 220, 90, 0.8), inset 0 -2px 0 rgba(0,0,0,0.18);
-        }
-        #boostButton.disabled {
-            background: rgba(80, 80, 80, 0.55);
-            border-color: #5a5a5a;
-            color: #888;
-            cursor: not-allowed;
-            box-shadow: none;
-        }
 
         /* Mode selector (in lobby panel) */
         #modeSelector { margin: 8px 0 12px 0; text-align: left; }
@@ -491,12 +454,10 @@
         <span class="pill">Score: <span id="myScore">0</span></span>
         <span class="pill" id="status">connecting...</span>
         <span class="pill clickable" id="muteToggle" title="Mute / unmute sounds">🔊</span>
-        <span class="pill" id="boostHint" style="display:none">Hold the ⚡ button (or SPACE) to boost</span>
     </div>
 
     <div id="stage">
         <canvas id="gameCanvas"></canvas>
-        <button id="boostButton" type="button" aria-label="Boost" style="display:none">⚡</button>
         <div id="sidebar">
             <div id="roundPanel">
                 <div id="roundLabel">—</div>
@@ -675,31 +636,6 @@ const lobbyStatusEl = document.getElementById("lobbyStatus");
 const modeGridEl = document.getElementById("modeGrid");
 const modeHintEl = document.getElementById("modeHint");
 const muteToggleEl = document.getElementById("muteToggle");
-const boostHintEl = document.getElementById("boostHint");
-const boostButton = document.getElementById("boostButton");
-
-// On-screen boost button: works for touch AND mouse (essential on mobile since
-// there's no Space key). Boost only fires while pressed; releases on touchend
-// / mouseup / mouseleave / touchcancel.
-function pressBoost(e) {
-    if (e) e.preventDefault();
-    if (phase !== "playing" || isDead || meEliminated) return;
-    setBoost(true);
-    boostButton.classList.add("pressed");
-}
-function releaseBoost(e) {
-    if (e) e.preventDefault();
-    setBoost(false);
-    boostButton.classList.remove("pressed");
-}
-boostButton.addEventListener("mousedown",   pressBoost);
-boostButton.addEventListener("mouseup",     releaseBoost);
-boostButton.addEventListener("mouseleave",  releaseBoost);
-boostButton.addEventListener("touchstart",  pressBoost, { passive: false });
-boostButton.addEventListener("touchend",    releaseBoost, { passive: false });
-boostButton.addEventListener("touchcancel", releaseBoost, { passive: false });
-// Block right-click context menu on the button (would interrupt boost on desktop)
-boostButton.addEventListener("contextmenu", e => e.preventDefault());
 const profileSlideEl = document.getElementById("profileSlide");
 const roomsSlideEl = document.getElementById("roomsSlide");
 const slideTitleEl = document.getElementById("slideTitle");
@@ -799,44 +735,54 @@ function drawParticles() {
     ctx.globalAlpha = 1;
 }
 
-// ---------------- LSS safe zone ----------------
-function drawSafeZone() {
+// ---------------- LSS: the map IS the circle ----------------
+function drawCircularWall() {
     if (!safeZone) return;
     const { cx, cy, r } = safeZone;
+    const WALL_THICKNESS = 26;
 
-    // 1. Heavy fade-out over the dangerous area (everywhere outside the circle).
-    //    Use evenodd to punch the safe circle out of a big covering rect.
+    // 1. Pure dark void filling everywhere outside the circle.
     ctx.save();
-    ctx.fillStyle = 'rgba(8, 0, 4, 0.62)';
+    ctx.fillStyle = '#03050a';
     ctx.beginPath();
-    ctx.rect(-2000, -2000, world.width + 4000, world.height + 4000);
+    ctx.rect(cx - 6000, cy - 6000, 12000, 12000);
     ctx.arc(cx, cy, r, 0, Math.PI * 2, true);
     ctx.closePath();
     ctx.fill('evenodd');
     ctx.restore();
 
-    // 2. Soft red gradient just outside the boundary so the fade isn't a hard line.
-    const grad = ctx.createRadialGradient(cx, cy, r, cx, cy, r + 70);
-    grad.addColorStop(0, 'rgba(248, 81, 73, 0)');
-    grad.addColorStop(1, 'rgba(180, 30, 30, 0.45)');
+    // 2. The wall — a thick stone-grey ring sitting just OUTSIDE the playable
+    //    circle, with a darker inner mortar line at the boundary.
     ctx.save();
-    ctx.fillStyle = grad;
+    ctx.strokeStyle = '#3a3a40';
+    ctx.lineWidth = WALL_THICKNESS;
     ctx.beginPath();
-    ctx.arc(cx, cy, r + 70, 0, Math.PI * 2);
-    ctx.arc(cx, cy, r, 0, Math.PI * 2, true);
-    ctx.closePath();
-    ctx.fill('evenodd');
+    ctx.arc(cx, cy, r + WALL_THICKNESS / 2, 0, Math.PI * 2);
+    ctx.stroke();
+    // Lighter outer rim
+    ctx.strokeStyle = '#5a5a60';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + WALL_THICKNESS, 0, Math.PI * 2);
+    ctx.stroke();
+    // Dark mortar at the inner edge
+    ctx.strokeStyle = '#181820';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + 1, 0, Math.PI * 2);
+    ctx.stroke();
     ctx.restore();
 
-    // 3. Pulsing red boundary ring with glow.
-    const pulse = 0.65 + 0.35 * Math.sin(Date.now() / 240);
+    // 3. Pulsing red danger glow just inside the boundary so players see it
+    //    closing in. Drawn on top of the inside edge.
+    const pulse = 0.55 + 0.35 * Math.sin(Date.now() / 240);
     ctx.save();
     ctx.shadowColor = '#f85149';
-    ctx.shadowBlur = 18;
+    ctx.shadowBlur = 16;
     ctx.strokeStyle = `rgba(248, 81, 73, ${pulse})`;
-    ctx.lineWidth = 5;
+    ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.arc(cx, cy, r - 2, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
 }
@@ -844,7 +790,6 @@ function drawSafeZone() {
 // ---------------- sound (Web Audio, generated) ----------------
 let audioCtx = null;
 let audioMuted = localStorage.getItem("snakeMuted") === "1";
-let boostNode = null;
 
 function ensureAudio() {
     if (audioMuted) return null;
@@ -873,45 +818,12 @@ function sndPowerup()  { tone(560, 0.07, 'sine', 0.18); tone(820, 0.07, 'sine', 
 function sndDie()      { tone(180, 0.4, 'sawtooth', 0.22); tone(90, 0.4, 'sawtooth', 0.18, 0.08); }
 function sndCountdown(){ tone(1600, 0.04, 'square', 0.14); }
 function sndStart()    { tone(440, 0.08, 'triangle', 0.18); tone(660, 0.08, 'triangle', 0.18, 0.08); tone(880, 0.12, 'triangle', 0.2, 0.16); }
-function startBoostHum() {
-    const ac = ensureAudio();
-    if (!ac || boostNode) return;
-    const osc = ac.createOscillator();
-    const g = ac.createGain();
-    osc.type = 'sawtooth';
-    osc.frequency.value = 80;
-    g.gain.setValueAtTime(0, ac.currentTime);
-    g.gain.linearRampToValueAtTime(0.06, ac.currentTime + 0.05);
-    osc.connect(g); g.connect(ac.destination);
-    osc.start();
-    boostNode = { osc, g };
-}
-function stopBoostHum() {
-    if (!boostNode || !audioCtx) return;
-    const { osc, g } = boostNode;
-    const t = audioCtx.currentTime;
-    g.gain.cancelScheduledValues(t);
-    g.gain.setValueAtTime(g.gain.value, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
-    osc.stop(t + 0.12);
-    boostNode = null;
-}
-
-// ---------------- boost input ----------------
-function setBoost(v) {
-    if (myBoost === v) return;
-    myBoost = v;
-    send({ type: "setBoost", boosting: v });
-    if (v) startBoostHum(); else stopBoostHum();
-}
-
-// ---------------- mute toggle (deferred until audioMuted is initialized) ----------------
+// ---------------- mute toggle ----------------
 muteToggleEl.textContent = audioMuted ? "🔇" : "🔊";
 muteToggleEl.addEventListener("click", () => {
     audioMuted = !audioMuted;
     localStorage.setItem("snakeMuted", audioMuted ? "1" : "0");
     muteToggleEl.textContent = audioMuted ? "🔇" : "🔊";
-    if (audioMuted) stopBoostHum();
 });
 
 let roomList = [];
@@ -921,7 +833,6 @@ let phase = "none";              // "none" | "lobby" | "playing" | "intermission
 let phaseEndsAt = 0;
 let roundNumber = 0;
 let currentMode = "ffa";         // "ffa" | "lastman" | "teams"
-let myBoost = false;
 let myEffects = { goldRemain: 0, shieldRemain: 0, speedRemain: 0, magnetRemain: 0 };
 let meEliminated = false;
 let prevMyScore = 0;
@@ -1127,7 +1038,6 @@ function handleMessage(event) {
                 const me = renderSnakes.find(s => s.id === myId);
                 if (me) spawnDeathBurst(me);
                 sndDie();
-                setBoost(false);  // stop boost on death
                 showDeathPanel();
             }
             break;
@@ -1555,24 +1465,6 @@ canvas.addEventListener("mousemove", (event) => {
 });
 
 // Boost: hold Space, right-click, or two-finger touch
-window.addEventListener("keydown", (e) => {
-    if (e.code === "Space" && phase === "playing" && !isDead && !meEliminated) {
-        e.preventDefault();
-        setBoost(true);
-    }
-});
-window.addEventListener("keyup", (e) => {
-    if (e.code === "Space") { e.preventDefault(); setBoost(false); }
-});
-canvas.addEventListener("mousedown", (e) => {
-    if (e.button === 2 && phase === "playing" && !isDead && !meEliminated) setBoost(true);
-});
-canvas.addEventListener("mouseup",   (e) => { if (e.button === 2) setBoost(false); });
-canvas.addEventListener("contextmenu", (e) => e.preventDefault());
-canvas.addEventListener("touchstart", (e) => {
-    if (e.touches.length >= 2 && phase === "playing" && !isDead && !meEliminated) setBoost(true);
-}, { passive: true });
-canvas.addEventListener("touchend",   () => setBoost(false), { passive: true });
 canvas.addEventListener("touchmove", (e) => {
     if (e.touches.length >= 1 && phase === "playing") {
         const rect = canvas.getBoundingClientRect();
@@ -1647,11 +1539,24 @@ function render() {
     ctx.save();
     ctx.translate(-cam.x, -cam.y);
 
-    drawTerrain(cam);
-    drawStoneWall();
-    for (const f of foodList) drawFood(f);
-    for (const s of renderSnakes) drawSnake(s, s.id === myId);
-    if (safeZone) drawSafeZone();
+    if (safeZone) {
+        // LSS: the map IS the shrinking circle. Clip every gameplay layer to it.
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(safeZone.cx, safeZone.cy, safeZone.r, 0, Math.PI * 2);
+        ctx.clip();
+        drawTerrain(cam);
+        for (const f of foodList) drawFood(f);
+        for (const s of renderSnakes) drawSnake(s, s.id === myId);
+        ctx.restore();
+        // Void outside the circle, then the wall itself, drawn unclipped.
+        drawCircularWall();
+    } else {
+        drawTerrain(cam);
+        drawStoneWall();
+        for (const f of foodList) drawFood(f);
+        for (const s of renderSnakes) drawSnake(s, s.id === myId);
+    }
     updateParticles();
     drawParticles();
 
@@ -1695,18 +1600,7 @@ function updateTimerDisplay() {
         roundTimeEl.classList.remove("urgent");
         updateTimerDisplay._lastTick = null;
     }
-    // Boost hint pill: only visible during play, hidden once user has boosted once
-    if (phase === "playing" && !isDead && !meEliminated && !myBoost && !boostHintShown) {
-        boostHintEl.style.display = "";
-    } else {
-        boostHintEl.style.display = "none";
-        if (myBoost) boostHintShown = true;
-    }
-    // Boost button: visible whenever the player can act in a round.
-    const canPlay = phase === "playing" && !isDead && !meEliminated;
-    boostButton.style.display = canPlay ? "" : "none";
 }
-let boostHintShown = false;
 
 function drawEffectBadges() {
     if (phase !== "playing" || !myEffects) return;
@@ -2404,17 +2298,6 @@ function drawSnake(s, isMe) {
         ctx.arc(s.x, s.y, 22 + 2 * Math.sin(t * 2), 0, Math.PI * 2);
         ctx.stroke();
         ctx.restore();
-    }
-    // Boost motion trail: faint sparkle particles drawn behind the snake
-    if (s.boosting && total >= 2) {
-        const tail = s.body[total - 1];
-        ctx.fillStyle = `rgba(255, 240, 120, 0.5)`;
-        for (let i = 0; i < 2; i++) {
-            const ang = Math.random() * Math.PI * 2;
-            ctx.beginPath();
-            ctx.arc(tail.x + Math.cos(ang) * 3, tail.y + Math.sin(ang) * 3, 1.6, 0, Math.PI * 2);
-            ctx.fill();
-        }
     }
     // Gold aura: golden glow around the head
     if (s.gold) {

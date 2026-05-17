@@ -11,10 +11,7 @@ const TICK_RATE = 30;
 const TICK_MS = 1000 / TICK_RATE;
 
 // Physics
-const SPEED = 2.0;
-const BOOST_SPEED = 3.6;            // 80% faster while sprinting
-const BOOST_DROP_EVERY_TICKS = 12;  // ~0.4s at 30Hz between dropped segments
-const MIN_SEGMENTS_TO_BOOST = 16;   // can't boost a tiny snake
+const SPEED = 3.0;                   // always-on fast pace (was 2.0 + manual boost)
 const SEGMENT_DISTANCE = 10;
 const INITIAL_SEGMENTS = 15;
 const TURN_SPEED = 0.15;
@@ -177,10 +174,25 @@ function randomFood(room, x, y, color, type) {
             ? POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)]
             : 'regular';
     }
+    // In LSS, the playable area is the safe-zone circle — spawn food inside it
+    // (using uniform-area sampling: sqrt of random for radius).
+    let fx = x, fy = y;
+    if (fx === undefined || fy === undefined) {
+        if (room.safeZone && room.mode === 'lastman') {
+            const { cx, cy, r } = room.safeZone;
+            const ang = Math.random() * Math.PI * 2;
+            const rad = Math.sqrt(Math.random()) * r * 0.94;
+            fx = cx + Math.cos(ang) * rad;
+            fy = cy + Math.sin(ang) * rad;
+        } else {
+            fx = Math.random() * size;
+            fy = Math.random() * size;
+        }
+    }
     return {
         id: room.nextFoodId++,
-        x: x ?? Math.random() * size,
-        y: y ?? Math.random() * size,
+        x: fx,
+        y: fy,
         color: color ?? FOOD_COLORS[Math.floor(Math.random() * FOOD_COLORS.length)],
         type: t,
     };
@@ -225,10 +237,8 @@ function updateSnake(room, s, ws, now) {
     while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
     s.angle += angleDiff * TURN_SPEED;
 
-    // Effective speed: base, * speed power-up, * boost
+    // Effective speed: base * optional speed power-up
     let speed = SPEED;
-    const canBoost = s.boosting && s.body.length > MIN_SEGMENTS_TO_BOOST;
-    if (canBoost) speed = BOOST_SPEED;
     if (s.speedUntil > now) speed *= POWERUP_EFFECTS.speed.speedMul;
 
     s.x += Math.cos(s.angle) * speed;
@@ -237,18 +247,6 @@ function updateSnake(room, s, ws, now) {
     const size = mapOf(room).size;
     if (s.x < 0 || s.x > size || s.y < 0 || s.y > size) {
         killSnake(room, s, 'wall', ws); return;
-    }
-
-    // Boost: every N ticks while boosting, lose a segment (no food drop —
-    // we don't want sprinting to litter the map).
-    if (canBoost) {
-        s.boostTicks++;
-        if (s.boostTicks >= BOOST_DROP_EVERY_TICKS) {
-            s.boostTicks = 0;
-            if (s.body.length > 0) s.body.pop();
-        }
-    } else {
-        s.boostTicks = 0;
     }
 
     if (s.growthQueue > 0) {
@@ -347,9 +345,9 @@ function startGame(room) {
     room.lastStandings = null;
     room.food.length = 0;
     room.nextFoodId = 1;
-    fillFood(room);
 
-    // LSS: initialize shrinking safe zone centered on the map
+    // LSS: initialize shrinking safe zone centered on the map BEFORE spawning
+    // food so randomFood seeds inside the circle.
     if (room.mode === 'lastman') {
         const size = mapOf(room).size;
         room.safeZone = {
@@ -360,6 +358,7 @@ function startGame(room) {
     } else {
         room.safeZone = null;
     }
+    fillFood(room);
 
     // Teams mode: split members alternately into red/blue, override color
     const memberList = [...room.members.values()];
@@ -468,7 +467,6 @@ function buildGameSnapshotFor(room, viewer) {
             x: s.x, y: s.y, angle: s.angle, body: s.body,
             color: s.color, pattern: s.pattern,
             score: s.score, team: s.team,
-            boosting: s.boosting && s.body.length > MIN_SEGMENTS_TO_BOOST,
             shield:  s.shieldUntil > now,
             gold:    s.goldUntil   > now,
             speed:   s.speedUntil  > now,
@@ -532,6 +530,16 @@ function shrinkSafeZone(room, now) {
     const progress = Math.min(1, (elapsed - LSS_GRACE_MS) / LSS_SHRINK_DURATION_MS);
     const initR = mapOf(room).size * LSS_INIT_RADIUS_FRACTION;
     room.safeZone.r = initR - (initR - LSS_MIN_RADIUS) * progress;
+
+    // Cull food that now lies outside the shrinking circle — fillFood will
+    // replenish inside the new boundary.
+    const { cx, cy, r } = room.safeZone;
+    const r2 = r * r;
+    for (let i = room.food.length - 1; i >= 0; i--) {
+        const f = room.food[i];
+        const dx = f.x - cx, dy = f.y - cy;
+        if (dx * dx + dy * dy > r2) room.food.splice(i, 1);
+    }
 }
 
 function checkSafeZone(room) {
@@ -744,9 +752,8 @@ wss.on('connection', (ws) => {
                 }
                 break;
             case 'setBoost':
-                if (room && room.phase === 'playing' && ctx.snake.alive) {
-                    ctx.snake.boosting = !!msg.boosting;
-                }
+                // Manual boost removed — auto-boost is the new default speed.
+                // Ignored for backward compatibility with old client builds.
                 break;
         }
     });
