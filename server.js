@@ -1089,6 +1089,16 @@ wss.on('connection', (ws) => {
                 // Manual boost removed — auto-boost is the new default speed.
                 // Ignored for backward compatibility with old client builds.
                 break;
+            case 'emote':
+                if (room && room.phase === 'playing' && ctx.snake.alive
+                    && typeof msg.emote === 'string' && msg.emote.length <= 4) {
+                    const payload = JSON.stringify({ type: 'playerEmote', id: ctx.snake.id, emote: msg.emote });
+                    for (const [memberWs] of room.members) {
+                        if (typeof memberWs === 'string') continue;
+                        if (memberWs.readyState === 1) memberWs.send(payload);
+                    }
+                }
+                break;
         }
     });
 

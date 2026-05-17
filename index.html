@@ -80,6 +80,31 @@
         .loadingTitle { font-size: 16px; font-weight: bold; }
         .loadingHint { font-size: 12px; color: #8b949e; margin-top: 6px; max-width: 260px; }
 
+        #emoteWheel {
+            position: absolute;
+            top: 50px; left: 12px;
+            background: rgba(13, 17, 23, 0.92);
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 6px;
+            display: flex;
+            gap: 4px;
+            z-index: 20;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.4);
+        }
+        .emoteBtn {
+            width: 40px; height: 40px;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            font-size: 22px;
+            cursor: pointer;
+            line-height: 1;
+            padding: 0;
+        }
+        .emoteBtn:hover { background: #1a1f26; border-color: #58a6ff; }
+        .emoteBtn:active { transform: scale(0.92); }
+
         /* Killer card in death panel */
         #killerBlock { margin: 6px 0 12px 0; }
         .killedByLabel {
@@ -643,6 +668,15 @@
         <span class="pill">Score: <span id="myScore">0</span></span>
         <span class="pill" id="status">connecting...</span>
         <span class="pill clickable" id="muteToggle" title="Mute / unmute sounds">🔊</span>
+        <span class="pill clickable" id="emoteToggle" title="Send an emote">💬</span>
+    </div>
+    <div id="emoteWheel" style="display:none">
+        <button class="emoteBtn" data-emote="👋">👋</button>
+        <button class="emoteBtn" data-emote="😂">😂</button>
+        <button class="emoteBtn" data-emote="🔥">🔥</button>
+        <button class="emoteBtn" data-emote="💀">💀</button>
+        <button class="emoteBtn" data-emote="🎉">🎉</button>
+        <button class="emoteBtn" data-emote="👀">👀</button>
     </div>
 
     <!-- Cold-start splash: covers everything until we've received a welcome msg -->
@@ -1063,6 +1097,8 @@ let isReady = false;
 
 // playerId -> HTMLImageElement; populated via 'playerImage' messages
 const playerImages = new Map();
+// playerId -> {emote: string, until: timestamp_ms}; floats above the snake's head
+const activeEmotes = new Map();
 
 // ---------------- particles ----------------
 const particles = [];
@@ -1269,6 +1305,22 @@ muteToggleEl.addEventListener("click", () => {
     localStorage.setItem("snakeMuted", audioMuted ? "1" : "0");
     muteToggleEl.textContent = audioMuted ? "🔇" : "🔊";
 });
+
+// Emote wheel: toggle visibility, send chosen emote, auto-close
+const emoteToggle = document.getElementById("emoteToggle");
+const emoteWheel  = document.getElementById("emoteWheel");
+emoteToggle.addEventListener("click", () => {
+    emoteWheel.style.display = (emoteWheel.style.display === "none") ? "" : "none";
+});
+for (const btn of emoteWheel.querySelectorAll(".emoteBtn")) {
+    btn.addEventListener("click", () => {
+        const emote = btn.dataset.emote;
+        if (phase === "playing" && !isDead && !meEliminated) {
+            send({ type: "emote", emote });
+        }
+        emoteWheel.style.display = "none";
+    });
+}
 
 let roomList = [];
 let currentRoom = null;          // { id, name, ownerId } | null
@@ -1530,6 +1582,9 @@ function handleMessage(event) {
         case "kill":
             showKillToast(msg.victimName, msg.victimAvatar, msg.victimScore);
             trackEvent('kill');
+            break;
+        case "playerEmote":
+            activeEmotes.set(msg.id, { emote: msg.emote, until: Date.now() + 2200 });
             break;
         case "error":
             // Invite-link join just failed: give a friendlier message and
@@ -2051,16 +2106,30 @@ function focusSnake() {
     return me();
 }
 
-function cameraOffset() {
+// Zoom out as the snake grows — short snake = close camera (action),
+// long snake = wide camera (situational awareness + sense of size).
+function snakeZoom() {
     const m = focusSnake();
-    if (!m) return { x: world.width / 2 - canvas.width / 2, y: world.height / 2 - canvas.height / 2 };
-    return { x: m.x - canvas.width / 2, y: m.y - canvas.height / 2 };
+    if (!m) return 1;
+    const baseLen = 15;     // INITIAL_SEGMENTS
+    const len = m.body.length;
+    const t = Math.min(1, Math.max(0, (len - baseLen) / 50));
+    return 1 - t * 0.35;    // ranges 1.0 → 0.65
+}
+
+function cameraOffset() {
+    const z = snakeZoom();
+    const m = focusSnake();
+    const halfW = canvas.width / (2 * z);
+    const halfH = canvas.height / (2 * z);
+    if (!m) return { x: world.width / 2 - halfW, y: world.height / 2 - halfH, z };
+    return { x: m.x - halfW, y: m.y - halfH, z };
 }
 
 setInterval(() => {
     if (!ws || ws.readyState !== 1 || !me() || isDead || phase !== "playing") return;
     const cam = cameraOffset();
-    send({ type: "input", x: mouse.x + cam.x, y: mouse.y + cam.y });
+    send({ type: "input", x: mouse.x / cam.z + cam.x, y: mouse.y / cam.z + cam.y });
 }, 33);
 
 // ---------------- render loop ----------------
@@ -2111,6 +2180,7 @@ function render() {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     const cam = cameraOffset();
     ctx.save();
+    ctx.scale(cam.z, cam.z);
     ctx.translate(-cam.x, -cam.y);
 
     if (safeZone) {
@@ -2124,7 +2194,7 @@ function render() {
         // any pixel inside the circle but at the rect's edge could otherwise
         // be left unpainted and show the canvas background through.
         ctx.fillStyle = currentTheme.base;
-        ctx.fillRect(cam.x, cam.y, canvas.width, canvas.height);
+        ctx.fillRect(cam.x, cam.y, camWorldW(cam), camWorldH(cam));
         drawTerrain(cam);
         if (hill) drawHill();
         for (const f of foodList) drawFood(f);
@@ -2142,14 +2212,52 @@ function render() {
     }
     updateParticles();
     drawParticles();
+    drawActiveEmotes();
 
     ctx.restore();
 
+    drawUrgencyVignette();
     drawEffectBadges();
     renderLeaderboard();
     if (phase === "intermission") renderIntermission();
     updateTimerDisplay();
     requestAnimationFrame(render);
+}
+
+// Floating emojis above the heads of snakes that just sent an emote.
+function drawActiveEmotes() {
+    const now = Date.now();
+    for (const [id, e] of activeEmotes) {
+        if (now > e.until) { activeEmotes.delete(id); continue; }
+        const s = renderSnakes.find(x => x.id === id);
+        if (!s) continue;
+        const age = 1 - (e.until - now) / 2200;       // 0 → 1
+        const lift = age * 28;
+        const alpha = age < 0.85 ? 1 : (1 - age) / 0.15;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.font = "32px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(e.emote, s.x, s.y - 36 - lift);
+        ctx.restore();
+    }
+}
+
+// Dark red vignette closes in from the edges during the final 30 seconds.
+function drawUrgencyVignette() {
+    if (phase !== "playing" || !phaseEndsAt) return;
+    const remaining = Math.max(0, phaseEndsAt - Date.now()) / 1000;
+    if (remaining > 30) return;
+    const intensity = Math.min(1, (30 - remaining) / 30);  // 0 → 1 as it runs out
+    const cx = canvas.width / 2, cy = canvas.height / 2;
+    const innerR = Math.min(canvas.width, canvas.height) * (0.55 - 0.15 * intensity);
+    const outerR = Math.max(canvas.width, canvas.height) * 0.75;
+    const g = ctx.createRadialGradient(cx, cy, innerR, cx, cy, outerR);
+    g.addColorStop(0, 'rgba(80, 0, 0, 0)');
+    g.addColorStop(1, `rgba(120, 0, 0, ${0.55 * intensity})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 
 function updateTimerDisplay() {
@@ -2261,11 +2369,16 @@ function drawTerrain(cam) {
 }
 
 // ---------- Shared terrain helpers ----------
+// Visible world width/height depends on zoom (camera.z): with z=0.5 we see 2× the
+// canvas in world coords. All visible-area computations divide by cam.z.
+function camWorldW(cam) { return canvas.width  / (cam.z || 1); }
+function camWorldH(cam) { return canvas.height / (cam.z || 1); }
+
 function fillBase(cam, color) {
     const x0 = Math.max(0, cam.x);
     const y0 = Math.max(0, cam.y);
-    const x1 = Math.min(world.width, cam.x + canvas.width);
-    const y1 = Math.min(world.height, cam.y + canvas.height);
+    const x1 = Math.min(world.width,  cam.x + camWorldW(cam));
+    const y1 = Math.min(world.height, cam.y + camWorldH(cam));
     if (x1 <= x0 || y1 <= y0) return false;
     ctx.fillStyle = color;
     ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
@@ -2274,8 +2387,8 @@ function fillBase(cam, color) {
 function patchOverlay(cam, patch, colorPicker) {
     const psx = Math.max(0, Math.floor(cam.x / patch) * patch);
     const psy = Math.max(0, Math.floor(cam.y / patch) * patch);
-    const pex = Math.min(world.width, cam.x + canvas.width + patch);
-    const pey = Math.min(world.height, cam.y + canvas.height + patch);
+    const pex = Math.min(world.width,  cam.x + camWorldW(cam) + patch);
+    const pey = Math.min(world.height, cam.y + camWorldH(cam) + patch);
     for (let py = psy; py < pey; py += patch) {
         for (let px = psx; px < pex; px += patch) {
             const c = colorPicker(noise2d(px * 0.018, py * 0.018));
@@ -2286,8 +2399,8 @@ function patchOverlay(cam, patch, colorPicker) {
 function forEachCell(cam, cell, callback) {
     const sx = Math.max(0, Math.floor(cam.x / cell) * cell);
     const sy = Math.max(0, Math.floor(cam.y / cell) * cell);
-    const ex = Math.min(world.width, cam.x + canvas.width + cell);
-    const ey = Math.min(world.height, cam.y + canvas.height + cell);
+    const ex = Math.min(world.width,  cam.x + camWorldW(cam) + cell);
+    const ey = Math.min(world.height, cam.y + camWorldH(cam) + cell);
     for (let cy = sy; cy < ey; cy += cell) {
         for (let cx = sx; cx < ex; cx += cell) {
             callback(cx, cy, hash(cx, cy));
