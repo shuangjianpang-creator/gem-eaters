@@ -1574,6 +1574,10 @@ function fillBase(cam, color) {
     ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
     return true;
 }
+// Per-cell color patch overlay. Instead of solid rects (which read as a
+// visible tile grid), draw each patch as a jittered, rotated, oblong ellipse
+// — overlapping neighbors break up the alignment and the terrain looks
+// organic rather than gridded.
 function patchOverlay(cam, patch, colorPicker) {
     const psx = Math.max(0, Math.floor(cam.x / patch) * patch);
     const psy = Math.max(0, Math.floor(cam.y / patch) * patch);
@@ -1582,9 +1586,37 @@ function patchOverlay(cam, patch, colorPicker) {
     for (let py = psy; py < pey; py += patch) {
         for (let px = psx; px < pex; px += patch) {
             const c = colorPicker(noise2d(px * 0.018, py * 0.018));
-            if (c) { ctx.fillStyle = c; ctx.fillRect(px, py, patch, patch); }
+            if (!c) continue;
+            const h = hash(px, py);
+            const jx = ((h & 0xff) / 255 - 0.5) * patch * 0.8;
+            const jy = (((h >>> 8) & 0xff) / 255 - 0.5) * patch * 0.8;
+            const rot = ((h >>> 16) & 0xff) / 255 * Math.PI;
+            const rx = patch * (0.7 + ((h >>> 4)  & 0x3f) / 63 * 0.55);
+            const ry = patch * (0.45 + ((h >>> 24) & 0x3f) / 63 * 0.45);
+            ctx.fillStyle = c;
+            ctx.beginPath();
+            ctx.ellipse(px + patch / 2 + jx, py + patch / 2 + jy, rx, ry, rot, 0, Math.PI * 2);
+            ctx.fill();
         }
     }
+}
+
+// Soft directional "sun" lighting anchored to world coordinates — same
+// gradient angle everywhere, so as the camera pans the lit/shadow sides of
+// the map stay consistent. Sells the 2.5D impression without affecting
+// gameplay clarity.
+function applyTerrainLighting(cam, lightAlpha = 0.10, shadowAlpha = 0.22) {
+    const x0 = Math.max(0, cam.x);
+    const y0 = Math.max(0, cam.y);
+    const x1 = Math.min(world.width,  cam.x + camWorldW(cam));
+    const y1 = Math.min(world.height, cam.y + camWorldH(cam));
+    if (x1 <= x0 || y1 <= y0) return;
+    const g = ctx.createLinearGradient(0, 0, world.width, world.height);
+    g.addColorStop(0, `rgba(255, 240, 200, ${lightAlpha})`);
+    g.addColorStop(0.5, 'rgba(0, 0, 0, 0)');
+    g.addColorStop(1, `rgba(0, 0, 30, ${shadowAlpha})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
 }
 function forEachCell(cam, cell, callback) {
     const sx = Math.max(0, Math.floor(cam.x / cell) * cell);
@@ -1601,12 +1633,13 @@ function forEachCell(cam, cell, callback) {
 // ---------- Theme 1: GRASSLANDS ----------
 function drawGrasslandsTerrain(cam) {
     if (!fillBase(cam, currentTheme.base)) return;
-    patchOverlay(cam, 24, n => {
+    patchOverlay(cam, 36, n => {
         if (n < 0.30) return currentTheme.patchDark;
         if (n > 0.82) return currentTheme.patchBright;
         if (n > 0.65) return currentTheme.patchLight;
         return null;
     });
+    applyTerrainLighting(cam);
     const cell = 28;
     const blades = [], clumps = [], flowers = [], pebbles = [], dirts = [];
     forEachCell(cam, cell, (cx, cy, h) => {
@@ -1744,12 +1777,14 @@ function drawPebbles(arr, base, hueRG = [-3, -8]) {
 // ---------- Theme 2: DESERT ----------
 function drawDesertTerrain(cam) {
     if (!fillBase(cam, currentTheme.base)) return;
-    patchOverlay(cam, 28, n => {
+    patchOverlay(cam, 42, n => {
         if (n < 0.32) return currentTheme.patchDark;
         if (n > 0.78) return currentTheme.patchBright;
         if (n > 0.62) return currentTheme.patchLight;
         return null;
     });
+    // Warmer sunlight + stronger shadow for the desert dune look
+    applyTerrainLighting(cam, 0.18, 0.30);
     drawSandRipples(cam);
 
     const cell = 36;
@@ -1858,12 +1893,14 @@ function drawDesertRocks(arr) {
 // ---------- Theme 3: SNOW ----------
 function drawSnowTerrain(cam) {
     if (!fillBase(cam, currentTheme.base)) return;
-    patchOverlay(cam, 32, n => {
+    patchOverlay(cam, 44, n => {
         if (n < 0.30) return currentTheme.patchDark;
         if (n > 0.80) return currentTheme.patchBright;
         if (n > 0.60) return currentTheme.patchLight;
         return null;
     });
+    // Cool blue shadow side, soft warm sunlight on the lit side
+    applyTerrainLighting(cam, 0.10, 0.18);
 
     const cell = 32;
     const drifts = [], flakes = [], rocks = [], sparkles = [];
@@ -1951,12 +1988,14 @@ function drawFrozenRocks(arr) {
 // ---------- Theme 4: LAVA ----------
 function drawLavaTerrain(cam) {
     if (!fillBase(cam, currentTheme.base)) return;
-    patchOverlay(cam, 28, n => {
+    patchOverlay(cam, 40, n => {
         if (n < 0.30) return currentTheme.patchDark;
         if (n > 0.80) return currentTheme.patchBright;
         if (n > 0.62) return currentTheme.patchLight;
         return null;
     });
+    // Lava: ember glow from upper-left, deep shadow elsewhere
+    applyTerrainLighting(cam, 0.20, 0.45);
 
     const cell = 34;
     const pools = [], cracks = [], obsidian = [], embers = [];
