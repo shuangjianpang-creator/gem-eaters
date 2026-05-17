@@ -46,6 +46,44 @@
         #ui .pill.clickable { cursor: pointer; pointer-events: auto; user-select: none; }
         #ui .pill.clickable:hover { background: rgba(33, 38, 45, 0.9); }
 
+        #boostButton {
+            position: absolute;
+            right: 26px;
+            bottom: 28px;
+            width: 96px;
+            height: 96px;
+            border-radius: 50%;
+            border: 3px solid #f0e84a;
+            background: rgba(248, 193, 30, 0.88);
+            color: #2a1a00;
+            font-size: 44px;
+            line-height: 1;
+            font-weight: bold;
+            cursor: pointer;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45), inset 0 -3px 0 rgba(0,0,0,0.18);
+            z-index: 20;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.08s, background 0.08s, box-shadow 0.08s;
+        }
+        #boostButton.pressed {
+            background: rgba(255, 220, 90, 1);
+            transform: scale(0.92);
+            box-shadow: 0 0 22px rgba(255, 220, 90, 0.8), inset 0 -2px 0 rgba(0,0,0,0.18);
+        }
+        #boostButton.disabled {
+            background: rgba(80, 80, 80, 0.55);
+            border-color: #5a5a5a;
+            color: #888;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
         /* Mode selector (in lobby panel) */
         #modeSelector { margin: 8px 0 12px 0; text-align: left; }
         #modeSelector .modeHeader {
@@ -453,11 +491,12 @@
         <span class="pill">Score: <span id="myScore">0</span></span>
         <span class="pill" id="status">connecting...</span>
         <span class="pill clickable" id="muteToggle" title="Mute / unmute sounds">🔊</span>
-        <span class="pill" id="boostHint" style="display:none">Hold SPACE to boost</span>
+        <span class="pill" id="boostHint" style="display:none">Hold the ⚡ button (or SPACE) to boost</span>
     </div>
 
     <div id="stage">
         <canvas id="gameCanvas"></canvas>
+        <button id="boostButton" type="button" aria-label="Boost" style="display:none">⚡</button>
         <div id="sidebar">
             <div id="roundPanel">
                 <div id="roundLabel">—</div>
@@ -637,6 +676,30 @@ const modeGridEl = document.getElementById("modeGrid");
 const modeHintEl = document.getElementById("modeHint");
 const muteToggleEl = document.getElementById("muteToggle");
 const boostHintEl = document.getElementById("boostHint");
+const boostButton = document.getElementById("boostButton");
+
+// On-screen boost button: works for touch AND mouse (essential on mobile since
+// there's no Space key). Boost only fires while pressed; releases on touchend
+// / mouseup / mouseleave / touchcancel.
+function pressBoost(e) {
+    if (e) e.preventDefault();
+    if (phase !== "playing" || isDead || meEliminated) return;
+    setBoost(true);
+    boostButton.classList.add("pressed");
+}
+function releaseBoost(e) {
+    if (e) e.preventDefault();
+    setBoost(false);
+    boostButton.classList.remove("pressed");
+}
+boostButton.addEventListener("mousedown",   pressBoost);
+boostButton.addEventListener("mouseup",     releaseBoost);
+boostButton.addEventListener("mouseleave",  releaseBoost);
+boostButton.addEventListener("touchstart",  pressBoost, { passive: false });
+boostButton.addEventListener("touchend",    releaseBoost, { passive: false });
+boostButton.addEventListener("touchcancel", releaseBoost, { passive: false });
+// Block right-click context menu on the button (would interrupt boost on desktop)
+boostButton.addEventListener("contextmenu", e => e.preventDefault());
 const profileSlideEl = document.getElementById("profileSlide");
 const roomsSlideEl = document.getElementById("roomsSlide");
 const slideTitleEl = document.getElementById("slideTitle");
@@ -1639,6 +1702,9 @@ function updateTimerDisplay() {
         boostHintEl.style.display = "none";
         if (myBoost) boostHintShown = true;
     }
+    // Boost button: visible whenever the player can act in a round.
+    const canPlay = phase === "playing" && !isDead && !meEliminated;
+    boostButton.style.display = canPlay ? "" : "none";
 }
 let boostHintShown = false;
 
