@@ -1385,6 +1385,7 @@ function render() {
         drawCircularWall();
     } else {
         drawTerrain(cam);
+        drawAbyss(cam);
         drawStoneWall();
         if (hill) drawHill();
         for (const f of foodList) drawFood(f);
@@ -2164,6 +2165,87 @@ function drawEmbers(arr) {
         const x = arr[i], y = arr[i + 1], h = arr[i + 2];
         const r = 0.9 + ((h >>> 4) & 1) * 0.6;
         ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    }
+}
+
+// Everything outside the world rect is the abyss — deep blue-black void with
+// faint twinkling stars. Called between drawTerrain and drawStoneWall so the
+// wall band always sits on top.
+function drawAbyss(cam) {
+    const W = world.width, H = world.height;
+    const vw = camWorldW(cam);
+    const vh = camWorldH(cam);
+    const vx0 = cam.x, vy0 = cam.y;
+    const vx1 = cam.x + vw, vy1 = cam.y + vh;
+    // Bail when the view is entirely inside the play field — no abyss visible.
+    if (vx0 >= 0 && vy0 >= 0 && vx1 <= W && vy1 <= H) return;
+
+    // 1. Deep void fill via evenodd cutout — paint everywhere visible OUTSIDE
+    //    the world rect, leaving the play field interior untouched.
+    ctx.save();
+    ctx.fillStyle = '#02040a';
+    ctx.beginPath();
+    ctx.rect(vx0 - 20, vy0 - 20, vw + 40, vh + 40);
+    ctx.rect(0, 0, W, H);
+    ctx.fill('evenodd');
+    ctx.restore();
+
+    // 2. Deterministic twinkling stars in the visible abyss. Each cell rolls
+    //    a hash; ~half get a star, 1-in-16 of those are bright.
+    const cell = 56;
+    const sx0 = Math.floor(vx0 / cell) * cell;
+    const sy0 = Math.floor(vy0 / cell) * cell;
+    const sx1 = Math.ceil(vx1 / cell) * cell;
+    const sy1 = Math.ceil(vy1 / cell) * cell;
+    const now = Date.now();
+    for (let cy = sy0; cy < sy1; cy += cell) {
+        for (let cx = sx0; cx < sx1; cx += cell) {
+            // Skip cells fully inside the play field
+            if (cx >= 0 && cy >= 0 && cx + cell <= W && cy + cell <= H) continue;
+            const h = hash(cx, cy);
+            if ((h & 0xff) > 120) continue;
+            const px = cx + ((h >>> 8) & 0xff) / 255 * cell;
+            const py = cy + ((h >>> 16) & 0xff) / 255 * cell;
+            // Skip individual stars that landed inside the world rect
+            if (px > 0 && px < W && py > 0 && py < H) continue;
+            const big = (h & 0xf00) === 0;
+            const baseAlpha = big ? 0.85 : 0.4;
+            const r = big ? 1.5 : 0.7;
+            const twinkle = 0.5 + 0.5 * Math.sin(now / (600 + (h & 0x3f) * 18) + h);
+            ctx.fillStyle = `rgba(200, 220, 255, ${baseAlpha * twinkle})`;
+            ctx.beginPath();
+            ctx.arc(px, py, r, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+
+    // 3. Soft outward fade right at the world edge — the abyss "drops off"
+    //    from the wall lip instead of being a hard color change.
+    const FOG = 30;
+    let g;
+    if (vy0 < 0) {
+        g = ctx.createLinearGradient(0, 0, 0, -FOG);
+        g.addColorStop(0, 'rgba(0,0,0,0.55)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(Math.max(vx0, -FOG), -FOG, Math.min(vw, W + 2 * FOG), FOG);
+    }
+    if (vy1 > H) {
+        g = ctx.createLinearGradient(0, H, 0, H + FOG);
+        g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.55)');
+        ctx.fillStyle = g;
+        ctx.fillRect(Math.max(vx0, -FOG), H, Math.min(vw, W + 2 * FOG), FOG);
+    }
+    if (vx0 < 0) {
+        g = ctx.createLinearGradient(0, 0, -FOG, 0);
+        g.addColorStop(0, 'rgba(0,0,0,0.55)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(-FOG, Math.max(vy0, -FOG), FOG, Math.min(vh, H + 2 * FOG));
+    }
+    if (vx1 > W) {
+        g = ctx.createLinearGradient(W, 0, W + FOG, 0);
+        g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.55)');
+        ctx.fillStyle = g;
+        ctx.fillRect(W, Math.max(vy0, -FOG), FOG, Math.min(vh, H + 2 * FOG));
     }
 }
 

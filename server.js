@@ -819,7 +819,9 @@ function buildGameSnapshotFor(room, viewer) {
     const snakes = [];
     for (const [, s] of room.members) {
         if (!s.alive) continue;
-        if (s !== viewer && s !== specTarget) {
+        // Boss snake is always included — players need to be able to see the
+        // threat (and the HUD banner relies on it appearing in the snapshot).
+        if (s !== viewer && s !== specTarget && !s.boss) {
             const dx = s.x - cx, dy = s.y - cy;
             if (dx * dx + dy * dy > r2) continue;
         }
