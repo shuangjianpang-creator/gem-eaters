@@ -368,29 +368,42 @@ function drawObstacles() {
     if (!obstacles || !obstacles.length) return;
     const isLava  = currentThemeId === 'lava';
     const isSnow  = currentThemeId === 'snow';
-    const baseFill = isLava ? '#7a1410' : isSnow ? '#506480' : '#2a2a30';
-    const glow    = isLava ? '#ff6020' : isSnow ? '#c0d0e0' : '#000000';
+    const lightTop = isLava ? '#ff8830' : isSnow ? '#ffffff' : '#6a6a72';
+    const baseMid  = isLava ? '#7a1410' : isSnow ? '#506480' : '#2a2a30';
+    const darkRim  = isLava ? '#1a0606' : isSnow ? '#1c2a40' : '#0a0a0e';
+    const glow     = isLava ? '#ff6020' : isSnow ? '#c0d0e0' : '#000000';
     const rimColor = isLava ? '#ffa040' : isSnow ? '#ffffff' : '#5a5a60';
     for (const o of obstacles) {
-        ctx.fillStyle = 'rgba(0,0,0,0.45)';
+        // Pronounced ground shadow (offset down-right)
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
         ctx.beginPath();
-        ctx.ellipse(o.x + 3, o.y + 6, o.r * 1.1, o.r * 0.45, 0, 0, Math.PI * 2);
+        ctx.ellipse(o.x + 4, o.y + 8, o.r * 1.15, o.r * 0.5, 0, 0, Math.PI * 2);
         ctx.fill();
+        // 3D bevel via radial gradient (lit from upper-left)
         ctx.save();
         if (isLava) { ctx.shadowColor = glow; ctx.shadowBlur = 14; }
-        ctx.fillStyle = baseFill;
+        const grad = ctx.createRadialGradient(
+            o.x - o.r * 0.5, o.y - o.r * 0.5, 1,
+            o.x, o.y, o.r,
+        );
+        grad.addColorStop(0,    lightTop);
+        grad.addColorStop(0.55, baseMid);
+        grad.addColorStop(1,    darkRim);
+        ctx.fillStyle = grad;
         ctx.beginPath();
         ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
+        // Rim
         ctx.strokeStyle = rimColor;
         ctx.lineWidth = 3;
         ctx.beginPath();
         ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
         ctx.stroke();
-        ctx.fillStyle = isLava ? 'rgba(255,200,90,0.55)' : 'rgba(255,255,255,0.22)';
+        // Bright specular cap
+        ctx.fillStyle = isLava ? 'rgba(255,220,140,0.65)' : 'rgba(255,255,255,0.4)';
         ctx.beginPath();
-        ctx.ellipse(o.x - o.r * 0.35, o.y - o.r * 0.35, o.r * 0.45, o.r * 0.28, 0, 0, Math.PI * 2);
+        ctx.ellipse(o.x - o.r * 0.42, o.y - o.r * 0.45, o.r * 0.35, o.r * 0.18, -0.5, 0, Math.PI * 2);
         ctx.fill();
     }
 }
@@ -454,6 +467,19 @@ function drawCircularWall() {
     ctx.beginPath();
     ctx.arc(cx, cy, r + 1, 0, Math.PI * 2);
     ctx.stroke();
+    ctx.restore();
+
+    // Inner-edge depth: radial gradient darkens the play area's outer rim,
+    // selling the illusion that the arena floor sits below the wall lip.
+    const innerShadow = ctx.createRadialGradient(cx, cy, Math.max(0, r - 26), cx, cy, r);
+    innerShadow.addColorStop(0, 'rgba(0,0,0,0)');
+    innerShadow.addColorStop(1, 'rgba(0,0,0,0.5)');
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.fillStyle = innerShadow;
+    ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
     ctx.restore();
 
     const pulse = 0.55 + 0.35 * Math.sin(Date.now() / 240);
@@ -2023,6 +2049,20 @@ function drawStoneWall() {
     drawWallBand(-T,  H, W + 2 * T, T);
     drawWallBand(-T,  0, T, H);
     drawWallBand( W,  0, T, H);
+    // Inner drop shadow — the wall casts depth into the play field
+    const SHADOW = 18;
+    let g = ctx.createLinearGradient(0, 0, 0, SHADOW);
+    g.addColorStop(0, 'rgba(0,0,0,0.45)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, SHADOW);
+    g = ctx.createLinearGradient(0, H - SHADOW, 0, H);
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.45)');
+    ctx.fillStyle = g; ctx.fillRect(0, H - SHADOW, W, SHADOW);
+    g = ctx.createLinearGradient(0, 0, SHADOW, 0);
+    g.addColorStop(0, 'rgba(0,0,0,0.45)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, SHADOW, H);
+    g = ctx.createLinearGradient(W - SHADOW, 0, W, 0);
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.45)');
+    ctx.fillStyle = g; ctx.fillRect(W - SHADOW, 0, SHADOW, H);
 }
 function drawWallBand(x, y, w, h) {
     ctx.fillStyle = "#1f1f22";
@@ -2081,32 +2121,54 @@ function powerupGlyph(type) {
 function drawFood(f) {
     const type = f.type || 'regular';
     if (type === 'regular') {
+        const r = 6;
+        // Drop shadow on the ground, offset down-right
+        ctx.fillStyle = 'rgba(0,0,0,0.38)';
         ctx.beginPath();
-        ctx.arc(f.x, f.y, 6, 0, Math.PI * 2);
-        ctx.fillStyle = f.color;
-        ctx.shadowColor = f.color;
-        ctx.shadowBlur = 8;
+        ctx.ellipse(f.x + 1, f.y + 4, r * 1.05, r * 0.45, 0, 0, Math.PI * 2);
         ctx.fill();
-        ctx.shadowBlur = 0;
+        // 3D sphere: radial gradient from upper-left highlight to dark rim
+        const grad = ctx.createRadialGradient(f.x - r * 0.4, f.y - r * 0.4, 0.5, f.x, f.y, r);
+        grad.addColorStop(0,    '#ffffff');
+        grad.addColorStop(0.28, f.color);
+        grad.addColorStop(1,    shade(f.color, -45));
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, r, 0, Math.PI * 2);
+        ctx.fill();
+        // Tiny specular dot
+        ctx.fillStyle = 'rgba(255,255,255,0.85)';
+        ctx.beginPath();
+        ctx.arc(f.x - r * 0.42, f.y - r * 0.42, r * 0.22, 0, Math.PI * 2);
+        ctx.fill();
         return;
     }
+    // Power-up: same sphere treatment + colored aura + glyph
     const c = powerupColor(type);
     const pulse = 0.85 + 0.15 * Math.sin(Date.now() / 200 + f.id);
     const r = 11 * pulse;
+    // Ground shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.beginPath();
+    ctx.ellipse(f.x + 2, f.y + 7, r * 0.95, r * 0.4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Colored aura
     ctx.save();
     ctx.shadowColor = c;
     ctx.shadowBlur = 16;
-    ctx.fillStyle = c;
+    const sphereGrad = ctx.createRadialGradient(f.x - r * 0.35, f.y - r * 0.35, 0.5, f.x, f.y, r);
+    sphereGrad.addColorStop(0,    '#ffffff');
+    sphereGrad.addColorStop(0.35, c);
+    sphereGrad.addColorStop(1,    shade(c, -55));
+    ctx.fillStyle = sphereGrad;
     ctx.beginPath(); ctx.arc(f.x, f.y, r, 0, Math.PI * 2); ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath(); ctx.arc(f.x, f.y, r * 0.45, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = c;
+    ctx.restore();
+    // Glyph
+    ctx.fillStyle = '#1a1a1a';
     ctx.font = `bold ${Math.round(r * 1.3)}px Arial`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(powerupGlyph(type), f.x, f.y + 1);
-    ctx.restore();
 }
 
 function segmentColorRaw(baseColor, pattern, i, total) {
@@ -2161,21 +2223,35 @@ function drawSnake(s, isMe) {
         perp[i] = { nx: -dy / len, ny: dx / len };
     }
 
-    ctx.beginPath();
     const hp = { nx: -Math.sin(s.angle), ny: Math.cos(s.angle) };
-    ctx.moveTo(s.x + hp.nx * 11, s.y + hp.ny * 11);
-    for (let i = 0; i < total; i++) {
-        ctx.lineTo(s.body[i].x + perp[i].nx * radii[i], s.body[i].y + perp[i].ny * radii[i]);
-    }
-    const tail = s.body[total - 1];
-    ctx.arc(tail.x, tail.y, radii[total - 1], Math.atan2(perp[total-1].ny, perp[total-1].nx), Math.atan2(-perp[total-1].ny, -perp[total-1].nx), false);
-    for (let i = total - 1; i >= 0; i--) {
-        ctx.lineTo(s.body[i].x - perp[i].nx * radii[i], s.body[i].y - perp[i].ny * radii[i]);
-    }
-    ctx.closePath();
+
+    // Helper: trace the full body silhouette as one closed path.
+    const traceBody = () => {
+        ctx.moveTo(s.x + hp.nx * 11, s.y + hp.ny * 11);
+        for (let i = 0; i < total; i++) {
+            ctx.lineTo(s.body[i].x + perp[i].nx * radii[i], s.body[i].y + perp[i].ny * radii[i]);
+        }
+        const tail = s.body[total - 1];
+        ctx.arc(tail.x, tail.y, radii[total - 1], Math.atan2(perp[total-1].ny, perp[total-1].nx), Math.atan2(-perp[total-1].ny, -perp[total-1].nx), false);
+        for (let i = total - 1; i >= 0; i--) {
+            ctx.lineTo(s.body[i].x - perp[i].nx * radii[i], s.body[i].y - perp[i].ny * radii[i]);
+        }
+        ctx.closePath();
+    };
+
+    // --- 0. Ground shadow (offset silhouette, ~5px down-right) ---
+    ctx.save();
+    ctx.translate(4, 6);
+    ctx.fillStyle = 'rgba(0,0,0,0.28)';
+    ctx.beginPath(); traceBody(); ctx.fill();
+    ctx.restore();
+
+    // --- 1. Smooth body fill underneath (continuous shape) ---
+    ctx.beginPath(); traceBody();
     ctx.fillStyle = shade(s.color, -22);
     ctx.fill();
 
+    // --- 2. Pattern segments on top (alternating / stripes / rainbow) ---
     for (let i = total - 1; i >= 0; i--) {
         ctx.beginPath();
         ctx.arc(s.body[i].x, s.body[i].y, radii[i] * 0.94, 0, Math.PI * 2);
@@ -2183,26 +2259,25 @@ function drawSnake(s, isMe) {
         ctx.fill();
     }
 
-    ctx.beginPath();
-    ctx.moveTo(s.x + hp.nx * 11, s.y + hp.ny * 11);
+    // --- 3. Per-segment "lit side" highlight — small bright ellipse on the
+    //        +perp side of each body segment, oriented along the spine, gives
+    //        the 2.5D tube illusion of light coming from one side. ---
     for (let i = 0; i < total; i++) {
-        ctx.lineTo(s.body[i].x + perp[i].nx * radii[i], s.body[i].y + perp[i].ny * radii[i]);
+        const seg = s.body[i];
+        const r = radii[i];
+        const hx = seg.x + perp[i].nx * r * 0.45;
+        const hy = seg.y + perp[i].ny * r * 0.45;
+        const ang = Math.atan2(perp[i].ny, perp[i].nx) + Math.PI / 2;
+        ctx.fillStyle = 'rgba(255,255,255,0.28)';
+        ctx.beginPath();
+        ctx.ellipse(hx, hy, r * 0.85, r * 0.28, ang, 0, Math.PI * 2);
+        ctx.fill();
     }
-    for (let i = total - 1; i >= 0; i--) {
-        ctx.lineTo(s.body[i].x - perp[i].nx * radii[i], s.body[i].y - perp[i].ny * radii[i]);
-    }
-    ctx.closePath();
-    ctx.strokeStyle = "rgba(0,0,0,0.32)";
-    ctx.lineWidth = 1;
-    ctx.stroke();
 
-    ctx.beginPath();
-    ctx.moveTo(s.x, s.y);
-    for (let i = 0; i < total; i++) ctx.lineTo(s.body[i].x, s.body[i].y);
-    ctx.strokeStyle = "rgba(255,255,255,0.16)";
-    ctx.lineWidth = 2;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
+    // --- 4. Subtle dark outline ---
+    ctx.beginPath(); traceBody();
+    ctx.strokeStyle = "rgba(0,0,0,0.36)";
+    ctx.lineWidth = 1;
     ctx.stroke();
 
     drawSnakeTongue(s);
@@ -2241,17 +2316,28 @@ function drawSnakeTongue(s) {
 }
 
 function drawSnakeHead(s, isMe) {
+    // Ground shadow (drawn before the translate so it's in world space)
+    ctx.fillStyle = 'rgba(0,0,0,0.34)';
+    ctx.beginPath();
+    ctx.ellipse(s.x + 4, s.y + 7, 14, 5.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
     ctx.save();
     ctx.translate(s.x, s.y);
     const img = playerImages.get(s.id);
     const hasImage = img && img.complete && img.naturalWidth > 0;
 
+    // Spherical head: radial gradient from light upper-left to dark rim
+    const headGrad = ctx.createRadialGradient(-5, -5, 1, 0, 0, 14);
+    headGrad.addColorStop(0,    shade(s.color, 55));
+    headGrad.addColorStop(0.55, shade(s.color, 10));
+    headGrad.addColorStop(1,    shade(s.color, -30));
+    ctx.fillStyle = headGrad;
     ctx.beginPath();
     ctx.arc(0, 0, 14, 0, Math.PI * 2);
-    ctx.fillStyle = shade(s.color, 10);
     ctx.fill();
     ctx.lineWidth = 1;
-    ctx.strokeStyle = "rgba(0,0,0,0.3)";
+    ctx.strokeStyle = "rgba(0,0,0,0.4)";
     ctx.stroke();
     if (isMe) {
         ctx.strokeStyle = "#ffffff";
@@ -2279,6 +2365,11 @@ function drawSnakeHead(s, isMe) {
         ctx.fillText(s.avatar, 0, 1);
         ctx.restore();
     } else {
+        // Specular highlight on the spherical head (drawn in pre-rotation space)
+        ctx.fillStyle = "rgba(255,255,255,0.35)";
+        ctx.beginPath();
+        ctx.ellipse(-4.5, -5, 5.5, 3.2, -0.5, 0, Math.PI * 2);
+        ctx.fill();
         ctx.rotate(s.angle);
         ctx.fillStyle = "#ffffff";
         ctx.beginPath(); ctx.arc(5, -6, 3.2, 0, Math.PI*2); ctx.fill();
