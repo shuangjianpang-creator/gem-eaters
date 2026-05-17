@@ -1334,17 +1334,49 @@ function spawnEatPuff(x, y, color) {
     }
 }
 function spawnDeathBurst(snake) {
-    const n = Math.min(60, snake.body.length * 3);
-    for (let i = 0; i < n; i++) {
-        const seg = snake.body[Math.floor(Math.random() * snake.body.length)] || snake;
-        const ang = Math.random() * Math.PI * 2;
-        const sp = 2 + Math.random() * 4;
+    const total = snake.body.length;
+    if (total === 0) return;
+    // One chunky body-segment particle per segment, flying outward from snake center
+    for (let i = 0; i < total; i++) {
+        const seg = snake.body[i];
+        const taper = (total - i) / total;
+        const segR = Math.max(11 * Math.sin(taper * Math.PI / 2), 3);
+        const dx = seg.x - snake.x;
+        const dy = seg.y - snake.y;
+        const baseAng = Math.atan2(dy || (Math.random() - 0.5), dx || (Math.random() - 0.5));
+        const ang = baseAng + (Math.random() - 0.5) * 0.7;
+        const sp = 2 + Math.random() * 3.5;
         particles.push({
-            x: seg.x, y: seg.y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
-            r: 2 + Math.random() * 3,
-            color: snake.color || '#7ee787', life: 0, maxLife: 40 + Math.random() * 30,
+            x: seg.x, y: seg.y,
+            vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+            r: segR * 0.9,
+            color: i % 2 === 0 ? shade(snake.color, -15) : (snake.color || '#7ee787'),
+            life: 0, maxLife: 55 + Math.random() * 35,
         });
     }
+    // Bright dust particles for sparkle
+    for (let i = 0; i < 28; i++) {
+        const seg = snake.body[Math.floor(Math.random() * total)] || snake;
+        const ang = Math.random() * Math.PI * 2;
+        const sp = 3 + Math.random() * 5;
+        particles.push({
+            x: seg.x, y: seg.y,
+            vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+            r: 1 + Math.random() * 2,
+            color: '#ffffff', life: 0, maxLife: 28 + Math.random() * 18,
+        });
+    }
+}
+
+// Brief white-to-transparent screen flash on your own death.
+let deathFlashUntil = 0;
+function triggerDeathFlash() { deathFlashUntil = Date.now() + 280; }
+function drawDeathFlash() {
+    if (Date.now() > deathFlashUntil) return;
+    const remaining = deathFlashUntil - Date.now();
+    const alpha = (remaining / 280) * 0.5;
+    ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 function updateParticles() {
     for (let i = particles.length - 1; i >= 0; i--) {
@@ -1556,12 +1588,14 @@ let safeZone = null;   // { cx, cy, r } in LSS mode, else null
 let spectatingId = null;  // when eliminated, server tells us whose camera to use
 let obstacles = [];    // static hazards on the current map
 let hill = null;       // { cx, cy, r } in KOTH mode, else null
+let itPlayerId = null; // who's "it" in Tag mode
 
 const MODES_LIST = [
     { id: 'ffa',     name: 'Free for All',        icon: '⚔️', description: 'Eat food, eat rivals. Highest score wins.' },
     { id: 'lastman', name: 'Last Snake Standing', icon: '💀', description: 'One death and you\'re out. Last alive wins.' },
     { id: 'teams',   name: 'Teams (Red vs Blue)', icon: '🚩', description: 'Auto-assigned. No friendly fire. Team score totals.' },
     { id: 'koth',    name: 'King of the Hill',    icon: '👑', description: 'Stay in the gold ring to earn points. Highest score wins.' },
+    { id: 'tag',     name: 'Tag — you\'re it!',  icon: '👹', description: 'Collisions pass the "it" status. Score = time NOT being it.' },
 ];
 
 let renderSnakes = [];
@@ -1722,6 +1756,7 @@ function handleMessage(event) {
             safeZone = msg.safeZone || null;
             obstacles = msg.obstacles || [];
             hill = msg.hill || null;
+            itPlayerId = msg.itPlayerId || null;
             applyMap(msg.map);
 
             // Eat detection: foods that disappeared near our snake = we ate them
@@ -1789,6 +1824,7 @@ function handleMessage(event) {
                 // Death explosion at our snake's last known position
                 const me = renderSnakes.find(s => s.id === myId);
                 if (me) spawnDeathBurst(me);
+                triggerDeathFlash();
                 sndDie();
                 showDeathPanel();
                 // LSS-eliminated: dismiss the panel after a brief moment so
@@ -2435,15 +2471,40 @@ function render() {
     drawParticles();
     drawActiveEmotes();
     drawComboBadges();
+    drawItMarker();
 
     ctx.restore();
 
     drawUrgencyVignette();
+    drawDeathFlash();
     drawEffectBadges();
     renderLeaderboard();
     if (phase === "intermission") renderIntermission();
     updateTimerDisplay();
     requestAnimationFrame(render);
+}
+
+// Tag mode: red pulsing aura + 👹 emoji above the "it" snake's head.
+function drawItMarker() {
+    if (!itPlayerId) return;
+    const s = renderSnakes.find(x => x.id === itPlayerId);
+    if (!s) return;
+    const pulse = 0.7 + 0.3 * Math.sin(Date.now() / 220);
+    // Red pulsing ring around head
+    ctx.save();
+    ctx.shadowColor = '#f85149';
+    ctx.shadowBlur = 18;
+    ctx.strokeStyle = `rgba(248, 81, 73, ${pulse})`;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 22, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+    // 👹 hovering above head
+    ctx.font = "26px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText('👹', s.x, s.y - 42);
 }
 
 // Floating "xN COMBO!" text above snakes with an active combo level.

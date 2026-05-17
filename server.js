@@ -54,7 +54,7 @@ const POWERUP_EFFECTS = {
 };
 
 // Game modes — owner picks in lobby
-const MODES = new Set(['ffa', 'lastman', 'teams', 'koth']);
+const MODES = new Set(['ffa', 'lastman', 'teams', 'koth', 'tag']);
 
 // King of the Hill: small circular hill at map center. +1 score per tick
 // (30/sec) for each snake whose head is inside.
@@ -305,9 +305,10 @@ function makeRoom(name, ownerId) {
         lastStandings: null,
         food: [],
         nextFoodId: 1,
-        safeZone: null,    // {cx, cy, r} when LSS is running
-        obstacles: [],     // [{x, y, r}] static hazards on the map
-        hill: null,        // {cx, cy, r} when KOTH is running
+        safeZone: null,
+        obstacles: [],
+        hill: null,
+        itPlayerId: null,  // who's "it" in Tag mode
     };
 }
 
@@ -355,6 +356,12 @@ function killSnake(room, s, reason, ws, killer = null) {
     if (!s.alive) return;
     s.alive = false;
     if (room.mode === 'lastman') s.eliminated = true;
+    // Tag: if the "it" snake just died (to wall/obstacle), pass it to a random
+    // alive survivor so the round can continue.
+    if (room.mode === 'tag' && s.id === room.itPlayerId) {
+        const alive = [...room.members.values()].filter(p => p !== s && p.alive);
+        room.itPlayerId = alive.length ? alive[Math.floor(Math.random() * alive.length)].id : null;
+    }
     for (let i = 0; i < s.body.length; i += FOOD_PER_DEAD_SEGMENTS) {
         const seg = s.body[i];
         room.food.push(randomFood(room,
@@ -476,9 +483,11 @@ function updateSnake(room, s, ws, now) {
 function checkSnakeCollisions(room, now) {
     const hitR2 = (HEAD_RADIUS + BODY_HIT_RADIUS) ** 2;
     const deaths = [];
+    // Tag: track "it" swaps to apply after iteration (avoid mutating during loop)
+    const tagSwaps = [];
     for (const [wsA, a] of room.members) {
         if (!a.alive) continue;
-        if (a.shieldUntil > now) continue;          // shield: invulnerable
+        if (a.shieldUntil > now) continue;
         let killer = null;
         for (const [, b] of room.members) {
             if (a === b || !b.alive) continue;
@@ -490,9 +499,24 @@ function checkSnakeCollisions(room, now) {
             }
             if (killer) break;
         }
-        if (killer) deaths.push([a, wsA, killer]);
+        if (!killer) continue;
+        // Tag mode: collisions between "it" and non-"it" SWAP the it-status
+        // (instead of killing). All other collisions kill normally.
+        if (room.mode === 'tag') {
+            const aIsIt = a.id === room.itPlayerId;
+            const bIsIt = killer.id === room.itPlayerId;
+            if (aIsIt !== bIsIt) {
+                // Tag pass: whoever was NOT "it" becomes it
+                tagSwaps.push(aIsIt ? killer.id : a.id);
+                continue;
+            }
+            // Both "it" (impossible) or both non-it → death as normal
+        }
+        deaths.push([a, wsA, killer]);
     }
     for (const [s, ws, killer] of deaths) killSnake(room, s, 'snake', ws, killer);
+    // Apply tag swaps (latest swap wins if multiple collisions happened simultaneously)
+    if (tagSwaps.length > 0) room.itPlayerId = tagSwaps[tagSwaps.length - 1];
 }
 
 function checkFood(room, now) {
@@ -582,6 +606,13 @@ function startGame(room) {
     } else {
         const defs = MAP_OBSTACLES[mapOf(room).theme] || [];
         room.obstacles = defs.map(o => ({ x: o.fx * size, y: o.fy * size, r: o.r }));
+    }
+    // Tag: pick a random "it" player at round start.
+    if (room.mode === 'tag') {
+        const players = [...room.members.values()];
+        room.itPlayerId = players.length ? players[Math.floor(Math.random() * players.length)].id : null;
+    } else {
+        room.itPlayerId = null;
     }
     fillFood(room);
 
@@ -749,6 +780,7 @@ function buildGameSnapshotFor(room, viewer) {
         spectatingId: specTarget ? specTarget.id : null,
         obstacles: room.obstacles,
         hill: room.hill,
+        itPlayerId: room.itPlayerId,
         safeZone: room.safeZone,
     };
 }
@@ -822,6 +854,12 @@ function tick() {
                     if (!s.alive) continue;
                     const dx = s.x - cx, dy = s.y - cy;
                     if (dx * dx + dy * dy < r2) s.score += 1;
+                }
+            }
+            // Tag: +1 per tick to every alive snake that ISN'T "it".
+            if (room.mode === 'tag') {
+                for (const [, s] of room.members) {
+                    if (s.alive && s.id !== room.itPlayerId) s.score += 1;
                 }
             }
             // Mode-specific early end conditions
