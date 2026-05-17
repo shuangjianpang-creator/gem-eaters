@@ -3,7 +3,6 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { Redis } from '@upstash/redis';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -118,6 +117,14 @@ const httpServer = http.createServer((req, res) => {
     // Strip query string + fragment — req.url is "/?room=XXX" for invite links
     // but we serve files, not literal paths with query strings.
     const cleanPath = req.url.split('?')[0].split('#')[0];
+
+    // Cheap liveness endpoint for external keep-alive pings (UptimeRobot etc.)
+    if (cleanPath === '/health') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('ok ' + rooms.size + ' rooms');
+        return;
+    }
+
     const urlPath = (cleanPath === '/' || cleanPath === '') ? '/index.html' : cleanPath;
     const fullPath = path.join(__dirname, urlPath);
     if (!fullPath.startsWith(__dirname)) { res.writeHead(403); res.end('Forbidden'); return; }
@@ -138,6 +145,9 @@ const wss = new WebSocketServer({ server: httpServer });
 // room reopens in its lobby phase with the new joiner as owner.
 let redis = null;
 if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+    // Dynamic import so the @upstash/redis bundle is only parsed when the
+    // env vars are actually set — saves cold-start time on the default deploy.
+    const { Redis } = await import('@upstash/redis');
     redis = new Redis({
         url: process.env.UPSTASH_REDIS_REST_URL,
         token: process.env.UPSTASH_REDIS_REST_TOKEN,
