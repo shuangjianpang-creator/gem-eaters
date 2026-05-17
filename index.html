@@ -413,6 +413,59 @@
             color: #8b949e;
             text-align: center;
         }
+
+        /* Daily challenge widget */
+        #dailyChallenge {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 10px 12px;
+            margin: 0 0 12px 0;
+            font-size: 12px;
+            text-align: left;
+        }
+        #dailyChallenge.completed { border-color: #56d364; background: #0f1d12; }
+        .dailyHead {
+            display: flex; align-items: center; gap: 8px;
+            color: #8b949e; text-transform: uppercase; letter-spacing: 1px; font-size: 10px;
+        }
+        .dailyIcon { font-size: 16px; }
+        .dailyLabel { flex: 1; }
+        .dailyStatus { color: #c9d1d9; font-variant-numeric: tabular-nums; }
+        #dailyChallenge.completed .dailyStatus { color: #56d364; }
+        .dailyName { color: #c9d1d9; margin: 4px 0 6px 0; font-size: 13px; }
+        .dailyBar {
+            height: 4px; background: #21262d; border-radius: 2px; overflow: hidden;
+        }
+        .dailyBarFill {
+            height: 100%; background: #56d364;
+            transition: width 0.3s; width: 0%;
+        }
+
+        /* Stats line */
+        .statsLine {
+            display: flex; justify-content: space-around; flex-wrap: wrap; gap: 4px 12px;
+            font-size: 11px; color: #8b949e;
+            margin: 0 0 14px 0;
+            padding: 6px 0;
+            border-top: 1px solid #21262d;
+            border-bottom: 1px solid #21262d;
+        }
+        .statsLine b { color: #c9d1d9; }
+
+        /* Challenge complete toast */
+        #challengeCompleteToast {
+            position: fixed;
+            top: 20px; left: 50%; transform: translateX(-50%);
+            background: linear-gradient(180deg, #2ea043, #238636);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 16px;
+            font-weight: bold;
+            box-shadow: 0 8px 24px rgba(46, 160, 67, 0.5);
+            z-index: 50;
+            animation: toastIn 0.4s ease-out;
+        }
         .inviteBtn {
             display: block !important;
             margin: 0 auto 8px auto !important;
@@ -679,6 +732,23 @@
                     <button id="quickPlayButton" class="quickPlayBig">⚡ Quick Play</button>
                     <p class="quickPlayHint">Skip the setup — auto-join the first open match.</p>
 
+                    <div id="dailyChallenge">
+                        <div class="dailyHead">
+                            <span class="dailyIcon" id="dailyIcon">🎯</span>
+                            <span class="dailyLabel">Today's challenge</span>
+                            <span class="dailyStatus" id="dailyStatus">0 / 0</span>
+                        </div>
+                        <div class="dailyName" id="dailyName">—</div>
+                        <div class="dailyBar"><div class="dailyBarFill" id="dailyBarFill"></div></div>
+                    </div>
+
+                    <div id="playerStats" class="statsLine">
+                        <span>🎮 <b id="statGames">0</b> games</span>
+                        <span>🏆 <b id="statWins">0</b> wins</span>
+                        <span>💀 <b id="statKills">0</b> kills</span>
+                        <span>📊 best <b id="statBest">0</b></span>
+                    </div>
+
                     <h3>Available Rooms</h3>
                     <div id="roomList"></div>
 
@@ -810,6 +880,100 @@ setTimeout(() => {
     }
 }, 4000);
 function hideSplash() { if (loadingSplash) loadingSplash.classList.add("hide"); }
+
+// ---------------- persistent stats + daily challenges (localStorage) ----------------
+const STATS_KEY = "snakeStats";
+const DAILY_KEY = "snakeDaily";
+const stats = Object.assign(
+    { games: 0, wins: 0, foodEaten: 0, powerups: 0, kills: 0, bestScore: 0 },
+    JSON.parse(localStorage.getItem(STATS_KEY) || '{}')
+);
+function saveStats() { localStorage.setItem(STATS_KEY, JSON.stringify(stats)); }
+
+const DAILY_CHALLENGES = [
+    { id: 'food50',   icon: '🍎', target: 50, text: 'Eat 50 food items',  metric: 'food' },
+    { id: 'power5',   icon: '⭐', target: 5,  text: 'Eat 5 power-ups',     metric: 'powerup' },
+    { id: 'win1',     icon: '🏆', target: 1,  text: 'Win 1 round',         metric: 'win' },
+    { id: 'kill3',    icon: '💀', target: 3,  text: 'Get 3 kills',         metric: 'kill' },
+    { id: 'score40',  icon: '🎯', target: 40, text: 'Reach score 40',      metric: 'best' },
+];
+function todayKey() {
+    const d = new Date();
+    return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
+function pickTodayChallenge() {
+    const key = todayKey();
+    const hash = [...key].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 0);
+    return DAILY_CHALLENGES[hash % DAILY_CHALLENGES.length];
+}
+let daily = JSON.parse(localStorage.getItem(DAILY_KEY) || '{}');
+if (daily.day !== todayKey()) {
+    daily = { day: todayKey(), challengeId: pickTodayChallenge().id, progress: 0, done: false };
+    localStorage.setItem(DAILY_KEY, JSON.stringify(daily));
+}
+function saveDaily() { localStorage.setItem(DAILY_KEY, JSON.stringify(daily)); }
+function currentChallenge() { return DAILY_CHALLENGES.find(c => c.id === daily.challengeId) || DAILY_CHALLENGES[0]; }
+
+function trackEvent(metric, amount = 1) {
+    // Update lifetime stats
+    if (metric === 'food')    stats.foodEaten += amount;
+    if (metric === 'powerup') stats.powerups  += amount;
+    if (metric === 'kill')    stats.kills     += amount;
+    if (metric === 'win')     stats.wins      += amount;
+    if (metric === 'game')    stats.games     += amount;
+    saveStats();
+    // Update daily challenge progress (only the matching metric)
+    if (!daily.done) {
+        const ch = currentChallenge();
+        if (ch.metric === metric) {
+            daily.progress = Math.min(ch.target, daily.progress + amount);
+            if (daily.progress >= ch.target) { daily.done = true; showChallengeComplete(ch); }
+            saveDaily();
+            renderDailyChallenge();
+        }
+    }
+    renderStats();
+}
+function trackBestScore(score) {
+    if (score > stats.bestScore) { stats.bestScore = score; saveStats(); renderStats(); }
+    if (!daily.done) {
+        const ch = currentChallenge();
+        if (ch.metric === 'best' && score >= ch.target) {
+            daily.done = true; daily.progress = ch.target;
+            saveDaily(); renderDailyChallenge(); showChallengeComplete(ch);
+        }
+    }
+}
+
+function renderDailyChallenge() {
+    const ch = currentChallenge();
+    const el = document.getElementById("dailyChallenge");
+    if (!el) return;
+    el.classList.toggle("completed", !!daily.done);
+    document.getElementById("dailyIcon").textContent = ch.icon;
+    document.getElementById("dailyName").textContent = daily.done ? '✓ ' + ch.text : ch.text;
+    document.getElementById("dailyStatus").textContent =
+        daily.done ? 'COMPLETE' : `${daily.progress} / ${ch.target}`;
+    const pct = Math.min(100, (daily.progress / ch.target) * 100);
+    document.getElementById("dailyBarFill").style.width = pct + '%';
+}
+function renderStats() {
+    const setText = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+    setText("statGames", stats.games);
+    setText("statWins",  stats.wins);
+    setText("statKills", stats.kills);
+    setText("statBest",  stats.bestScore);
+}
+function showChallengeComplete(ch) {
+    const t = document.createElement("div");
+    t.id = "challengeCompleteToast";
+    t.textContent = `🎉 Daily challenge complete: ${ch.text}`;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 3800);
+    sndPowerup();
+}
+renderDailyChallenge();
+renderStats();
 const createRoomButton = document.getElementById("createRoomButton");
 const roomsErrorEl = document.getElementById("roomsError");
 
@@ -1302,8 +1466,10 @@ function handleMessage(event) {
                             sndPowerup();
                             spawnEatPuff(f.x, f.y, powerupColor(f.type));
                             spawnEatPuff(f.x, f.y, '#ffffff');
+                            trackEvent('powerup');
                         } else {
                             sndEat();
+                            trackEvent('food');
                         }
                     }
                 }
@@ -1315,6 +1481,12 @@ function handleMessage(event) {
                 if (phase === "intermission") {
                     isDead = false;
                     showScreen("intermission");
+                    // Stats: count this round, count win if we're #1 in standings
+                    trackEvent('game');
+                    if (msg.standings && msg.standings.length > 0 && msg.standings[0].id === myId) {
+                        trackEvent('win');
+                    }
+                    if (me) trackBestScore(me.score);
                 } else if (phase === "playing" && prevPhase !== "playing") {
                     isDead = false;
                     showScreen("none");
@@ -1324,6 +1496,8 @@ function handleMessage(event) {
                 isDead = false;
                 showScreen("none");
             }
+            // Track best score continuously during play (don't wait for end).
+            if (phase === "playing" && me) trackBestScore(me.score);
             break;
         }
         case "died":
@@ -1355,6 +1529,7 @@ function handleMessage(event) {
             break;
         case "kill":
             showKillToast(msg.victimName, msg.victimAvatar, msg.victimScore);
+            trackEvent('kill');
             break;
         case "error":
             // Invite-link join just failed: give a friendlier message and
