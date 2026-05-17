@@ -129,7 +129,20 @@ const wss = new WebSocketServer({ server: httpServer });
 const sockets = new Map();   // ws -> { snake, roomId|null }
 const rooms = new Map();     // roomId -> room
 let nextPlayerId = 1;
-let nextRoomId = 1;
+// Random 4-char room codes (skip 0/O, 1/I/L to avoid confusion when read aloud).
+// 30^4 ≈ 810k unique codes — collisions essentially never happen at hobby scale.
+const ROOM_CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+function genRoomCode() {
+    for (let attempt = 0; attempt < 50; attempt++) {
+        let id = '';
+        for (let i = 0; i < 4; i++) {
+            id += ROOM_CODE_CHARS[Math.floor(Math.random() * ROOM_CODE_CHARS.length)];
+        }
+        if (!rooms.has(id)) return id;
+    }
+    // Should never get here unless we have ~600k+ rooms
+    return 'R' + Date.now().toString(36).slice(-3).toUpperCase();
+}
 
 function makeSnake() {
     return {
@@ -189,7 +202,7 @@ function resetSnake(s, room) {
 }
 
 function makeRoom(name, ownerId) {
-    const id = String(nextRoomId++);
+    const id = genRoomCode();
     return {
         id,
         name: (name || `Room ${id}`).slice(0, 24),

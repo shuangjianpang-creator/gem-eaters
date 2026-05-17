@@ -346,6 +346,25 @@
             font-size: 12px !important;
         }
         .inviteBtn.copied { background: #2ea043 !important; color: white; }
+        #roomCodeRow {
+            text-align: center;
+            margin: 4px 0 8px 0;
+            font-size: 12px;
+            color: #8b949e;
+        }
+        .roomCodeLabel { text-transform: uppercase; letter-spacing: 1px; margin-right: 6px; }
+        #roomCodeValue {
+            display: inline-block;
+            font-family: monospace;
+            font-size: 22px;
+            font-weight: bold;
+            color: #56d364;
+            letter-spacing: 4px;
+            padding: 2px 12px;
+            background: #0d1117;
+            border-radius: 6px;
+            border: 1px solid #30363d;
+        }
 
         #spectatorOverlay {
             position: absolute;
@@ -597,6 +616,10 @@
                     <h2 id="lobbyRoomName">Room</h2>
                     <span class="badge"><span id="lobbyPlayerCount">0</span>/8 players</span>
                 </div>
+                <div id="roomCodeRow">
+                    <span class="roomCodeLabel">Room code:</span>
+                    <span id="roomCodeValue">—</span>
+                </div>
                 <button id="inviteButton" class="secondary inviteBtn">🔗 Copy invite link</button>
                 <p id="lobbyError" style="color:#f85149;display:none"></p>
                 <div id="modeSelector">
@@ -674,6 +697,7 @@ const quickPlayButton = document.getElementById("quickPlayButton");
 const inviteButton = document.getElementById("inviteButton");
 const URL_PARAMS = new URLSearchParams(location.search);
 const PENDING_ROOM_FROM_URL = URL_PARAMS.get("room");
+let pendingUrlJoinId = null;  // set while we're trying to join via ?room= URL
 const createRoomButton = document.getElementById("createRoomButton");
 const roomsErrorEl = document.getElementById("roomsError");
 
@@ -1058,6 +1082,7 @@ function handleMessage(event) {
             world = msg.world;
             // If the URL had ?room=ID, auto-join that room after identity is sent.
             if (PENDING_ROOM_FROM_URL && !currentRoom) {
+                pendingUrlJoinId = PENDING_ROOM_FROM_URL;
                 send({ type: "joinRoom", roomId: PENDING_ROOM_FROM_URL });
             }
             // Cache our own image locally so we render correctly even before any
@@ -1086,6 +1111,7 @@ function handleMessage(event) {
             currentRoom = { id: msg.roomId, ownerId: msg.ownerId, name: "" };
             phase = "lobby";
             isReady = false;
+            pendingUrlJoinId = null;  // URL-join succeeded
             // Sticky URL so a refresh rejoins this room.
             try { history.replaceState(null, "", `?room=${msg.roomId}`); } catch {}
             showScreen("lobby");
@@ -1188,6 +1214,19 @@ function handleMessage(event) {
             }
             break;
         case "error":
+            // Invite-link join just failed: give a friendlier message and
+            // strip the ?room= URL so a refresh doesn't loop the error.
+            if (pendingUrlJoinId && msg.message === 'Room not found') {
+                const stale = pendingUrlJoinId;
+                pendingUrlJoinId = null;
+                try { history.replaceState(null, "", location.pathname); } catch {}
+                showRoomsError(
+                    `That invite link's room (${stale}) doesn't exist anymore — ` +
+                    `it expires whenever the server restarts. ` +
+                    `Click Quick Play or create a new room and share its link.`
+                );
+                break;
+            }
             if (currentScreen === "lobby") showLobbyError(msg.message);
             else                          showRoomsError(msg.message);
             break;
@@ -1487,6 +1526,7 @@ function renderLobby() {
     // and the browser drops the click event (mousedown on old element,
     // mouseup on new element). Cache the inputs and skip work when unchanged.
     const dataKey = JSON.stringify({
+        id: currentRoom.id,
         n:  currentRoom.name,
         o:  currentRoom.ownerId,
         m:  currentRoom.mapId,
@@ -1500,6 +1540,8 @@ function renderLobby() {
 
     lobbyRoomNameEl.textContent = currentRoom.name || "Room";
     lobbyPlayerCountEl.textContent = lobbyPlayers.length;
+    const roomCodeValueEl = document.getElementById("roomCodeValue");
+    if (roomCodeValueEl) roomCodeValueEl.textContent = currentRoom.id || "—";
 
     const amOwnerLobby = currentRoom.ownerId === myId;
 
