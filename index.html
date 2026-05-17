@@ -54,7 +54,8 @@
             margin-bottom: 6px;
             display: flex; justify-content: space-between; align-items: baseline;
         }
-        #modeGrid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+        #modeGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+        @media (min-width: 560px) { #modeGrid { grid-template-columns: 1fr 1fr 1fr 1fr; } }
         .modeCard {
             background: #0d1117;
             border: 2px solid #30363d;
@@ -792,6 +793,73 @@ function drawParticles() {
     ctx.globalAlpha = 1;
 }
 
+// ---------------- Obstacles (theme-colored deadly props) ----------------
+function drawObstacles() {
+    if (!obstacles || !obstacles.length) return;
+    const isLava  = currentThemeId === 'lava';
+    const isSnow  = currentThemeId === 'snow';
+    const baseFill = isLava ? '#7a1410' : isSnow ? '#506480' : '#2a2a30';
+    const glow    = isLava ? '#ff6020' : isSnow ? '#c0d0e0' : '#000000';
+    const rimColor = isLava ? '#ffa040' : isSnow ? '#ffffff' : '#5a5a60';
+    for (const o of obstacles) {
+        // Ground shadow
+        ctx.fillStyle = 'rgba(0,0,0,0.45)';
+        ctx.beginPath();
+        ctx.ellipse(o.x + 3, o.y + 6, o.r * 1.1, o.r * 0.45, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Body with theme-appropriate glow
+        ctx.save();
+        if (isLava) { ctx.shadowColor = glow; ctx.shadowBlur = 14; }
+        ctx.fillStyle = baseFill;
+        ctx.beginPath();
+        ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        // Rim
+        ctx.strokeStyle = rimColor;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
+        ctx.stroke();
+        // Highlight blob top-left
+        ctx.fillStyle = isLava ? 'rgba(255,200,90,0.55)' : 'rgba(255,255,255,0.22)';
+        ctx.beginPath();
+        ctx.ellipse(o.x - o.r * 0.35, o.y - o.r * 0.35, o.r * 0.45, o.r * 0.28, 0, 0, Math.PI * 2);
+        ctx.fill();
+    }
+}
+
+// ---------------- KOTH hill ----------------
+function drawHill() {
+    if (!hill) return;
+    const { cx, cy, r } = hill;
+    // Translucent gold disc
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    grad.addColorStop(0, 'rgba(250, 204, 21, 0.22)');
+    grad.addColorStop(1, 'rgba(250, 204, 21, 0.06)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    // Pulsing gold ring
+    const pulse = 0.6 + 0.4 * Math.sin(Date.now() / 320);
+    ctx.save();
+    ctx.shadowColor = '#facc15';
+    ctx.shadowBlur = 14;
+    ctx.strokeStyle = `rgba(250, 204, 21, ${pulse})`;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+    // Crown icon at center
+    ctx.fillStyle = 'rgba(250, 204, 21, 0.55)';
+    ctx.font = `${Math.round(r * 0.42)}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('👑', cx, cy);
+}
+
 // ---------------- LSS: the map IS the circle ----------------
 function drawCircularWall() {
     if (!safeZone) return;
@@ -896,11 +964,14 @@ let prevMyScore = 0;
 let prevFoodIds = new Set();
 let safeZone = null;   // { cx, cy, r } in LSS mode, else null
 let spectatingId = null;  // when eliminated, server tells us whose camera to use
+let obstacles = [];    // static hazards on the current map
+let hill = null;       // { cx, cy, r } in KOTH mode, else null
 
 const MODES_LIST = [
     { id: 'ffa',     name: 'Free for All',        icon: '⚔️', description: 'Eat food, eat rivals. Highest score wins.' },
     { id: 'lastman', name: 'Last Snake Standing', icon: '💀', description: 'One death and you\'re out. Last alive wins.' },
     { id: 'teams',   name: 'Teams (Red vs Blue)', icon: '🚩', description: 'Auto-assigned. No friendly fire. Team score totals.' },
+    { id: 'koth',    name: 'King of the Hill',    icon: '👑', description: 'Stay in the gold ring to earn points. Highest score wins.' },
 ];
 
 let renderSnakes = [];
@@ -1055,6 +1126,8 @@ function handleMessage(event) {
             meEliminated = !!msg.meEliminated;
             spectatingId = msg.spectatingId || null;
             safeZone = msg.safeZone || null;
+            obstacles = msg.obstacles || [];
+            hill = msg.hill || null;
             applyMap(msg.map);
 
             // Eat detection: foods that disappeared near our snake = we ate them
@@ -1532,8 +1605,9 @@ leaveLobbyButton.addEventListener("click", () => send({ type: "leaveRoom" }));
 
 // ---------------- death + intermission panels ----------------
 function showDeathPanel() {
-    const reasonText = lastDeathReason === 'wall' ? "Hit the wall."
-                     : lastDeathReason === 'zone' ? "Caught outside the shrinking zone!"
+    const reasonText = lastDeathReason === 'wall'     ? "Hit the wall."
+                     : lastDeathReason === 'zone'     ? "Caught outside the shrinking zone!"
+                     : lastDeathReason === 'obstacle' ? "Hit an obstacle."
                      : "Ran into another snake.";
     deathReasonEl.textContent = `${reasonText} Final score: ${lastDeathScore}`;
     showScreen("death");
@@ -1665,6 +1739,7 @@ function render() {
         ctx.fillStyle = currentTheme.base;
         ctx.fillRect(cam.x, cam.y, canvas.width, canvas.height);
         drawTerrain(cam);
+        if (hill) drawHill();
         for (const f of foodList) drawFood(f);
         for (const s of renderSnakes) drawSnake(s, s.id === myId);
         ctx.restore();
@@ -1673,7 +1748,9 @@ function render() {
     } else {
         drawTerrain(cam);
         drawStoneWall();
+        if (hill) drawHill();
         for (const f of foodList) drawFood(f);
+        drawObstacles();
         for (const s of renderSnakes) drawSnake(s, s.id === myId);
     }
     updateParticles();

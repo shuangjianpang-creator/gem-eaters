@@ -49,7 +49,35 @@ const POWERUP_EFFECTS = {
 };
 
 // Game modes — owner picks in lobby
-const MODES = new Set(['ffa', 'lastman', 'teams']);
+const MODES = new Set(['ffa', 'lastman', 'teams', 'koth']);
+
+// King of the Hill: small circular hill at map center. +1 score per tick
+// (30/sec) for each snake whose head is inside.
+const KOTH_HILL_R = 150;
+
+// Static map obstacles — hit one and die. Fractional positions so they
+// scale with map size. Skipped in LSS (would crowd the shrinking circle).
+const MAP_OBSTACLES = {
+    grasslands: [
+        { fx: 0.25, fy: 0.25, r: 40 }, { fx: 0.75, fy: 0.25, r: 44 },
+        { fx: 0.25, fy: 0.75, r: 42 }, { fx: 0.75, fy: 0.75, r: 40 },
+        { fx: 0.50, fy: 0.18, r: 34 }, { fx: 0.50, fy: 0.82, r: 34 },
+    ],
+    desert: [
+        { fx: 0.30, fy: 0.40, r: 36 }, { fx: 0.70, fy: 0.30, r: 34 },
+        { fx: 0.70, fy: 0.70, r: 40 }, { fx: 0.30, fy: 0.60, r: 32 },
+        { fx: 0.15, fy: 0.50, r: 36 }, { fx: 0.85, fy: 0.50, r: 36 },
+    ],
+    snow: [
+        { fx: 0.30, fy: 0.30, r: 44 }, { fx: 0.70, fy: 0.30, r: 40 },
+        { fx: 0.30, fy: 0.70, r: 42 }, { fx: 0.70, fy: 0.70, r: 40 },
+        { fx: 0.50, fy: 0.50, r: 36 },
+    ],
+    lava: [
+        { fx: 0.30, fy: 0.30, r: 46 }, { fx: 0.70, fy: 0.70, r: 50 },
+        { fx: 0.70, fy: 0.30, r: 44 }, { fx: 0.30, fy: 0.70, r: 44 },
+    ],
+};
 
 // Bots
 const BOT_RESPAWN_MS = 3000;
@@ -176,7 +204,9 @@ function makeRoom(name, ownerId) {
         lastStandings: null,
         food: [],
         nextFoodId: 1,
-        safeZone: null,   // {cx, cy, r} when LSS is running
+        safeZone: null,    // {cx, cy, r} when LSS is running
+        obstacles: [],     // [{x, y, r}] static hazards on the map
+        hill: null,        // {cx, cy, r} when KOTH is running
     };
 }
 
@@ -271,6 +301,16 @@ function updateSnake(room, s, ws, now) {
         const size = mapOf(room).size;
         if (s.x < 0 || s.x > size || s.y < 0 || s.y > size) {
             killSnake(room, s, 'wall', ws); return;
+        }
+    }
+    // Obstacle collision (head only) — die instantly.
+    if (room.obstacles && room.obstacles.length) {
+        for (const o of room.obstacles) {
+            const dx = s.x - o.x, dy = s.y - o.y;
+            const hit = o.r + HEAD_RADIUS;
+            if (dx * dx + dy * dy < hit * hit) {
+                killSnake(room, s, 'obstacle', ws); return;
+            }
         }
     }
 
@@ -393,8 +433,8 @@ function startGame(room) {
 
     // LSS: initialize shrinking safe zone centered on the map BEFORE spawning
     // food so randomFood seeds inside the circle.
+    const size = mapOf(room).size;
     if (room.mode === 'lastman') {
-        const size = mapOf(room).size;
         room.safeZone = {
             cx: size / 2,
             cy: size / 2,
@@ -402,6 +442,18 @@ function startGame(room) {
         };
     } else {
         room.safeZone = null;
+    }
+    // KOTH: place the hill at map center.
+    room.hill = room.mode === 'koth'
+        ? { cx: size / 2, cy: size / 2, r: KOTH_HILL_R }
+        : null;
+    // Obstacles: per-map fractional positions, scaled to current size.
+    // Skipped in LSS so the shrinking circle stays uncluttered.
+    if (room.mode === 'lastman') {
+        room.obstacles = [];
+    } else {
+        const defs = MAP_OBSTACLES[mapOf(room).theme] || [];
+        room.obstacles = defs.map(o => ({ x: o.fx * size, y: o.fy * size, r: o.r }));
     }
     fillFood(room);
 
@@ -564,6 +616,8 @@ function buildGameSnapshotFor(room, viewer) {
         myEffects,
         meEliminated: !!viewer.eliminated,
         spectatingId: specTarget ? specTarget.id : null,
+        obstacles: room.obstacles,
+        hill: room.hill,
         safeZone: room.safeZone,
     };
 }
@@ -629,6 +683,16 @@ function tick() {
             checkFood(room, now);
             shrinkSafeZone(room, now);
             checkSafeZone(room);
+            // KOTH: each tick, +1 score to every alive snake whose head is in the hill.
+            if (room.mode === 'koth' && room.hill) {
+                const { cx, cy, r } = room.hill;
+                const r2 = r * r;
+                for (const [, s] of room.members) {
+                    if (!s.alive) continue;
+                    const dx = s.x - cx, dy = s.y - cy;
+                    if (dx * dx + dy * dy < r2) s.score += 1;
+                }
+            }
             // Mode-specific early end conditions
             if (room.mode === 'lastman' && room.members.size >= 2) {
                 let alive = 0;
