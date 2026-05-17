@@ -114,7 +114,10 @@ const MIME = {
 };
 
 const httpServer = http.createServer((req, res) => {
-    const urlPath = req.url === '/' ? '/index.html' : req.url;
+    // Strip query string + fragment — req.url is "/?room=XXX" for invite links
+    // but we serve files, not literal paths with query strings.
+    const cleanPath = req.url.split('?')[0].split('#')[0];
+    const urlPath = (cleanPath === '/' || cleanPath === '') ? '/index.html' : cleanPath;
     const fullPath = path.join(__dirname, urlPath);
     if (!fullPath.startsWith(__dirname)) { res.writeHead(403); res.end('Forbidden'); return; }
     fs.readFile(fullPath, (err, data) => {

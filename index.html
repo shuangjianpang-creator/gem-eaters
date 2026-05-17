@@ -748,11 +748,30 @@ const intermissionSubEl = document.getElementById("intermissionSub");
 const standingsListEl = document.getElementById("standingsList");
 
 // ---------------- identity & local state ----------------
-const SAVED_NAME = localStorage.getItem("snakeName") || "";
-const SAVED_AVATAR = localStorage.getItem("snakeAvatar") || "🐍";
-const SAVED_COLOR = localStorage.getItem("snakeColor") || "#56d364";
-const SAVED_PATTERN = localStorage.getItem("snakePattern") || "solid";
-if (SAVED_NAME) nameInput.value = SAVED_NAME;
+// Random-default profile for first-time visitors so they can hit Quick Play
+// immediately instead of being forced through the profile slide.
+const RANDOM_NAMES = [
+    'Slither', 'Hisser', 'Coil', 'Fang', 'Viper', 'Nibble', 'Wiggle', 'Zigzag',
+    'Boop', 'Dart', 'Scaly', 'Loop', 'Glide', 'Snappy', 'Twirl', 'Spike',
+];
+const RANDOM_AVATARS = ['🐍','🐉','🦊','🐺','🦄','🐙','🦖','👾','🔥','⚡','🐲','🦅'];
+const RANDOM_COLORS  = ['#56d364','#f0883e','#a371f7','#58a6ff','#f85149','#d29922','#ec4899','#06b6d4','#facc15','#34d399','#fb7185','#a3e635'];
+function pickRandom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+let SAVED_NAME    = localStorage.getItem("snakeName")    || "";
+let SAVED_AVATAR  = localStorage.getItem("snakeAvatar")  || "";
+let SAVED_COLOR   = localStorage.getItem("snakeColor")   || "";
+let SAVED_PATTERN = localStorage.getItem("snakePattern") || "";
+// If anything is missing (first visit), fill in random defaults and persist
+// them so the user can just hit Quick Play / Join.
+if (!SAVED_NAME) {
+    SAVED_NAME = pickRandom(RANDOM_NAMES) + ' ' + Math.floor(Math.random() * 900 + 100);
+    localStorage.setItem("snakeName", SAVED_NAME);
+}
+if (!SAVED_AVATAR)  { SAVED_AVATAR  = pickRandom(RANDOM_AVATARS); localStorage.setItem("snakeAvatar",  SAVED_AVATAR); }
+if (!SAVED_COLOR)   { SAVED_COLOR   = pickRandom(RANDOM_COLORS);  localStorage.setItem("snakeColor",   SAVED_COLOR); }
+if (!SAVED_PATTERN) { SAVED_PATTERN = 'solid';                    localStorage.setItem("snakePattern", SAVED_PATTERN); }
+nameInput.value = SAVED_NAME;
 
 let myId = null;
 let world = { width: 3000, height: 3000 };
