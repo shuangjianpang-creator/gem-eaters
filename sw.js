@@ -1,7 +1,7 @@
 // Service worker — caches the app shell so the PWA installs and launches offline.
 // (Gameplay still needs the WebSocket; this just keeps the UI loadable.)
 
-const CACHE = 'snake-shell-v10';
+const CACHE = 'snake-shell-v11';
 const SHELL = [
     './',
     './index.html',

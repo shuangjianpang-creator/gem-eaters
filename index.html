@@ -57,6 +57,7 @@
             transition: opacity 0.4s;
         }
         #loadingSplash.hide { opacity: 0; pointer-events: none; }
+        #loadingSplash.gone { display: none !important; }
         .loadingInner { text-align: center; color: #c9d1d9; }
         .loadingLogo {
             font-size: 64px;
@@ -913,7 +914,18 @@ setTimeout(() => {
             "Server's waking up — free tier sleeps when idle, takes ~30s on the first request.";
     }
 }, 4000);
-function hideSplash() { if (loadingSplash) loadingSplash.classList.add("hide"); }
+function hideSplash() {
+    if (!loadingSplash) return;
+    loadingSplash.classList.add("hide");
+    // Belt and suspenders: even if the opacity transition is suppressed (some
+    // browsers/extensions), force display:none after the fade completes so
+    // nothing can possibly cover the rooms screen.
+    setTimeout(() => loadingSplash.classList.add("gone"), 500);
+}
+// Absolute fallback — if for any reason we never get a welcome message
+// (firewall, broken WS, etc.) hide the splash after 90s so the user at least
+// sees the rooms screen rather than staring at a spinner forever.
+setTimeout(hideSplash, 90_000);
 
 // ---------------- persistent stats + daily challenges (localStorage) ----------------
 const STATS_KEY = "snakeStats";
