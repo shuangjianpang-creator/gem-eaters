@@ -25,6 +25,11 @@ const FOOD_TARGET_COUNT = 400;
 const FOOD_PER_DEAD_SEGMENTS = 3;
 const VIEW_RADIUS = 1500;
 
+// Combo system: eating food within COMBO_WINDOW_MS of the previous eat raises
+// your combo level (capped at COMBO_MAX). Each eat scores +comboLevel points.
+const COMBO_WINDOW_MS = 3000;
+const COMBO_MAX = 5;
+
 // Round + room
 const ROUND_MS = 3 * 60 * 1000;
 const INTERMISSION_MS = 10 * 1000;
@@ -239,6 +244,8 @@ function makeSnake() {
         score: 0,
         growthQueue: 0,
         ready: false,
+        comboLevel: 0,
+        lastEatAt: 0,
         // Boost
         boosting: false,
         boostTicks: 0,
@@ -518,8 +525,13 @@ function checkFood(room, now) {
             if (dx * dx + dy * dy < eatR2) {
                 room.food.splice(i, 1);
                 s.growthQueue += SEGMENTS_PER_FOOD;
-                const mul = s.goldUntil > now ? POWERUP_EFFECTS.gold.scoreMul : 1;
-                s.score += 1 * mul;
+                // Combo: bump level if this eat was within the window, else reset to 1.
+                s.comboLevel = (now - s.lastEatAt) < COMBO_WINDOW_MS
+                    ? Math.min(COMBO_MAX, s.comboLevel + 1)
+                    : 1;
+                s.lastEatAt = now;
+                const goldMul = s.goldUntil > now ? POWERUP_EFFECTS.gold.scoreMul : 1;
+                s.score += s.comboLevel * goldMul;
                 applyPowerup(s, f.type, now);
             }
         }
@@ -686,11 +698,14 @@ function buildGameSnapshotFor(room, viewer) {
             if (dx * dx + dy * dy > r2) continue;
         }
         const now = Date.now();
+        // Combo only "visible" while the window is still open
+        const liveCombo = (now - s.lastEatAt) < COMBO_WINDOW_MS ? s.comboLevel : 0;
         snakes.push({
             id: s.id, name: s.name, avatar: s.avatar,
             x: s.x, y: s.y, angle: s.angle, body: s.body,
             color: s.color, pattern: s.pattern,
             score: s.score, team: s.team,
+            combo: liveCombo,
             shield:  s.shieldUntil > now,
             gold:    s.goldUntil   > now,
             speed:   s.speedUntil  > now,

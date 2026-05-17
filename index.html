@@ -82,6 +82,32 @@
         .loadingHint { font-size: 12px; color: #8b949e; margin-top: 6px; max-width: 280px; }
         .loadingElapsed { font-size: 11px; color: #56d364; margin-top: 10px; font-variant-numeric: tabular-nums; min-height: 14px; }
 
+        /* Tutorial overlay */
+        #tutorialOverlay {
+            position: fixed; inset: 0;
+            background: rgba(0, 0, 0, 0.85);
+            z-index: 95;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .tutPanel {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 24px 28px;
+            text-align: center;
+            min-width: 280px; max-width: 380px;
+        }
+        .tutCard { animation: tutFade 0.3s ease-out; }
+        @keyframes tutFade { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .tutEmoji { font-size: 56px; margin-bottom: 8px; line-height: 1; }
+        .tutCard h3 { margin: 0 0 8px 0; }
+        .tutCard p  { margin: 0; color: #8b949e; font-size: 14px; line-height: 1.45; }
+        .tutDots { display: flex; gap: 6px; justify-content: center; margin: 16px 0 14px 0; }
+        .tutDot { width: 8px; height: 8px; border-radius: 50%; background: #30363d; }
+        .tutDot.active { background: #56d364; }
+        .tutNav { display: flex; gap: 8px; justify-content: space-between; }
+        .tutNav button { flex: 1; margin: 0 !important; }
+
         #emoteWheel {
             position: absolute;
             top: 50px; left: 12px;
@@ -480,6 +506,39 @@
         }
         .statsLine b { color: #c9d1d9; }
 
+        /* Achievements list + toast */
+        #achievementsList {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+            margin: 6px 0 14px 0;
+        }
+        .achItem {
+            display: flex; align-items: center; gap: 8px;
+            padding: 6px 8px;
+            background: #0d1117; border: 1px solid #21262d; border-radius: 6px;
+            font-size: 11px; text-align: left;
+        }
+        .achItem.got { border-color: #2ea043; }
+        .achItem.locked .achInfo { color: #6e7681; }
+        .achIcon { font-size: 18px; line-height: 1; flex-shrink: 0; }
+        .achName { font-weight: bold; color: #c9d1d9; }
+        .achItem.locked .achName { color: #6e7681; }
+        .achDesc { font-size: 10px; color: #8b949e; }
+        .achToast {
+            position: fixed; top: 70px; left: 50%; transform: translateX(-50%);
+            background: linear-gradient(180deg, #d29922, #a17816);
+            color: #1a1a1a;
+            padding: 10px 18px; border-radius: 16px;
+            display: flex; align-items: center; gap: 12px;
+            box-shadow: 0 8px 24px rgba(210, 153, 34, 0.5);
+            z-index: 50;
+            animation: toastIn 0.4s ease-out;
+        }
+        .achToastIcon { font-size: 26px; line-height: 1; }
+        .achToastLabel { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.75; }
+        .achToastName  { font-weight: bold; font-size: 14px; }
+
         /* Challenge complete toast */
         #challengeCompleteToast {
             position: fixed;
@@ -681,6 +740,26 @@
         <button class="emoteBtn" data-emote="👀">👀</button>
     </div>
 
+    <!-- First-visit tutorial: 3 cards, skippable -->
+    <div id="tutorialOverlay" style="display:none">
+        <div class="tutPanel">
+            <div class="tutCard" id="tutCard">
+                <div class="tutEmoji" id="tutEmoji">🐍</div>
+                <h3 id="tutTitle">Welcome to gem-eaters</h3>
+                <p id="tutText">A quick 3-step intro before you play.</p>
+            </div>
+            <div class="tutDots">
+                <span class="tutDot active"></span>
+                <span class="tutDot"></span>
+                <span class="tutDot"></span>
+            </div>
+            <div class="tutNav">
+                <button id="tutSkip" class="secondary">Skip</button>
+                <button id="tutNext">Next →</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Cold-start splash: covers everything until we've received a welcome msg -->
     <div id="loadingSplash">
         <div class="loadingInner">
@@ -756,6 +835,9 @@
                         </div>
                         <canvas id="skinPreview" width="200" height="36"></canvas>
                     </div>
+
+                    <h3 id="achievementsHeader">Achievements — 0 / 0</h3>
+                    <div id="achievementsList"></div>
 
                     <div class="slideNav">
                         <button id="toRoomsButton">Continue to Rooms →</button>
@@ -906,6 +988,50 @@ const URL_PARAMS = new URLSearchParams(location.search);
 const PENDING_ROOM_FROM_URL = URL_PARAMS.get("room");
 let pendingUrlJoinId = null;  // set while we're trying to join via ?room= URL
 
+// ---------------- first-visit tutorial ----------------
+const TUTORIAL_KEY = "snakeTutorialSeen";
+const TUTORIAL_STEPS = [
+    { emoji: '🐍', title: 'Move with your mouse',
+      text: 'Your snake follows wherever you point. On touch, drag your finger.' },
+    { emoji: '🍎', title: 'Eat to grow',
+      text: 'Colored food = +1 score. Special ⚡✦★⌬ items give shields, speed, score multipliers and more — grab them!' },
+    { emoji: '💀', title: 'Avoid other snakes',
+      text: "Crash your head into another snake's body and you die. Outsmart them, force them to crash into you instead." },
+];
+function showTutorial() {
+    const ov = document.getElementById("tutorialOverlay");
+    const emo = document.getElementById("tutEmoji");
+    const title = document.getElementById("tutTitle");
+    const text = document.getElementById("tutText");
+    const next = document.getElementById("tutNext");
+    const skip = document.getElementById("tutSkip");
+    const dots = ov.querySelectorAll(".tutDot");
+    const card = document.getElementById("tutCard");
+    let idx = 0;
+    function render() {
+        const s = TUTORIAL_STEPS[idx];
+        // Re-trigger fade animation on each card
+        card.style.animation = 'none'; void card.offsetWidth; card.style.animation = '';
+        emo.textContent = s.emoji;
+        title.textContent = s.title;
+        text.textContent = s.text;
+        dots.forEach((d, i) => d.classList.toggle("active", i === idx));
+        next.textContent = idx === TUTORIAL_STEPS.length - 1 ? "Got it!" : "Next →";
+    }
+    function close() {
+        ov.style.display = "none";
+        localStorage.setItem(TUTORIAL_KEY, "1");
+    }
+    next.onclick = () => {
+        if (idx >= TUTORIAL_STEPS.length - 1) { close(); return; }
+        idx++; render();
+    };
+    skip.onclick = close;
+    render();
+    ov.style.display = "";
+}
+if (!localStorage.getItem(TUTORIAL_KEY)) showTutorial();
+
 // ---------------- cold-start splash ----------------
 const loadingSplash = document.getElementById("loadingSplash");
 const loadingHint = document.getElementById("loadingHint");
@@ -974,14 +1100,13 @@ function saveDaily() { localStorage.setItem(DAILY_KEY, JSON.stringify(daily)); }
 function currentChallenge() { return DAILY_CHALLENGES.find(c => c.id === daily.challengeId) || DAILY_CHALLENGES[0]; }
 
 function trackEvent(metric, amount = 1) {
-    // Update lifetime stats
     if (metric === 'food')    stats.foodEaten += amount;
     if (metric === 'powerup') stats.powerups  += amount;
     if (metric === 'kill')    stats.kills     += amount;
     if (metric === 'win')     stats.wins      += amount;
     if (metric === 'game')    stats.games     += amount;
+    if (metric === 'lssWin')  stats.lssWins = (stats.lssWins || 0) + amount;
     saveStats();
-    // Update daily challenge progress (only the matching metric)
     if (!daily.done) {
         const ch = currentChallenge();
         if (ch.metric === metric) {
@@ -992,6 +1117,14 @@ function trackEvent(metric, amount = 1) {
         }
     }
     renderStats();
+    checkAchievements();
+}
+function trackCombo(level) {
+    if (level > (stats.bestCombo || 0)) {
+        stats.bestCombo = level;
+        saveStats();
+        checkAchievements();
+    }
 }
 function trackBestScore(score) {
     if (score > stats.bestScore) { stats.bestScore = score; saveStats(); renderStats(); }
@@ -1033,6 +1166,67 @@ function showChallengeComplete(ch) {
 }
 renderDailyChallenge();
 renderStats();
+setTimeout(() => { renderAchievements(); checkAchievements(); }, 0);
+
+// ---------------- achievements (lifetime, localStorage) ----------------
+const ACH_KEY = "snakeAchievements";
+const ACHIEVEMENTS = [
+    { id: 'first_kill',  name: 'First Blood',     icon: '🩸', desc: 'Get your first kill',                check: () => stats.kills >= 1 },
+    { id: 'glutton',     name: 'Glutton',          icon: '🍴', desc: 'Eat 1,000 food items total',         check: () => stats.foodEaten >= 1000 },
+    { id: 'champion',    name: 'Champion',         icon: '🏆', desc: 'Win 10 rounds',                       check: () => stats.wins >= 10 },
+    { id: 'killer_5',    name: 'Killer Instinct',  icon: '⚔️', desc: 'Get 25 kills',                       check: () => stats.kills >= 25 },
+    { id: 'power_50',    name: 'Power Hungry',     icon: '⚡', desc: 'Eat 50 power-ups',                   check: () => stats.powerups >= 50 },
+    { id: 'score_100',   name: 'Centurion',        icon: '💯', desc: 'Reach 100 in a single round',        check: () => stats.bestScore >= 100 },
+    { id: 'score_200',   name: 'High Roller',      icon: '🎯', desc: 'Reach 200 in a single round',        check: () => stats.bestScore >= 200 },
+    { id: 'games_25',    name: 'Regular',          icon: '🎮', desc: 'Play 25 games',                       check: () => stats.games >= 25 },
+    { id: 'games_100',   name: 'Addict',           icon: '🔥', desc: 'Play 100 games',                      check: () => stats.games >= 100 },
+    { id: 'combo_3',     name: 'On Fire',          icon: '🔥', desc: 'Reach a x3 combo',                    check: () => (stats.bestCombo || 0) >= 3 },
+    { id: 'combo_5',     name: 'Combo King',       icon: '👑', desc: 'Reach the max x5 combo',              check: () => (stats.bestCombo || 0) >= 5 },
+    { id: 'survivor',    name: 'Survivor',         icon: '🛡️', desc: 'Win a Last Snake Standing round',     check: () => (stats.lssWins || 0) >= 1 },
+];
+let unlockedAch = JSON.parse(localStorage.getItem(ACH_KEY) || '[]');
+const unlockedSet = new Set(unlockedAch);
+function saveAch() { localStorage.setItem(ACH_KEY, JSON.stringify([...unlockedSet])); }
+
+function checkAchievements() {
+    for (const a of ACHIEVEMENTS) {
+        if (unlockedSet.has(a.id)) continue;
+        if (a.check()) {
+            unlockedSet.add(a.id);
+            saveAch();
+            showAchievementToast(a);
+        }
+    }
+    renderAchievements();
+}
+function showAchievementToast(a) {
+    const t = document.createElement("div");
+    t.className = "achToast";
+    t.innerHTML = `<div class="achToastIcon">${a.icon}</div>
+                   <div><div class="achToastLabel">Achievement unlocked</div>
+                        <div class="achToastName">${a.name}</div></div>`;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 4500);
+    sndPowerup();
+}
+function renderAchievements() {
+    const el = document.getElementById("achievementsList");
+    if (!el) return;
+    const total = ACHIEVEMENTS.length;
+    const unlocked = unlockedSet.size;
+    const header = document.getElementById("achievementsHeader");
+    if (header) header.textContent = `Achievements — ${unlocked} / ${total}`;
+    el.innerHTML = ACHIEVEMENTS.map(a => {
+        const got = unlockedSet.has(a.id);
+        return `<div class="achItem ${got ? 'got' : 'locked'}">
+            <div class="achIcon">${got ? a.icon : '🔒'}</div>
+            <div class="achInfo">
+                <div class="achName">${escapeHtml(a.name)}</div>
+                <div class="achDesc">${escapeHtml(a.desc)}</div>
+            </div>
+        </div>`;
+    }).join("");
+}
 const createRoomButton = document.getElementById("createRoomButton");
 const roomsErrorEl = document.getElementById("roomsError");
 
@@ -1532,6 +1726,8 @@ function handleMessage(event) {
 
             // Eat detection: foods that disappeared near our snake = we ate them
             const mySnake = msg.snakes.find(s => s.id === myId);
+            // Track our combo level for achievement
+            if (mySnake && mySnake.combo) trackCombo(mySnake.combo);
             if (mySnake && prevFood && foodList) {
                 const currentIds = new Set(foodList.map(f => f.id));
                 for (const f of prevFood) {
@@ -1558,10 +1754,10 @@ function handleMessage(event) {
                 if (phase === "intermission") {
                     isDead = false;
                     showScreen("intermission");
-                    // Stats: count this round, count win if we're #1 in standings
                     trackEvent('game');
                     if (msg.standings && msg.standings.length > 0 && msg.standings[0].id === myId) {
                         trackEvent('win');
+                        if (currentMode === 'lastman') trackEvent('lssWin');
                     }
                     if (me) trackBestScore(me.score);
                 } else if (phase === "playing" && prevPhase !== "playing") {
@@ -2238,6 +2434,7 @@ function render() {
     updateParticles();
     drawParticles();
     drawActiveEmotes();
+    drawComboBadges();
 
     ctx.restore();
 
@@ -2247,6 +2444,26 @@ function render() {
     if (phase === "intermission") renderIntermission();
     updateTimerDisplay();
     requestAnimationFrame(render);
+}
+
+// Floating "xN COMBO!" text above snakes with an active combo level.
+function drawComboBadges() {
+    for (const s of renderSnakes) {
+        if (!s.combo || s.combo < 2) continue;
+        const isMe = s.id === myId;
+        const colors = ['', '', '#f0e84a', '#f0883e', '#f85149', '#facc15'];
+        const c = colors[s.combo] || '#facc15';
+        const size = isMe ? 18 : 14;
+        ctx.save();
+        ctx.font = `bold ${size}px Arial`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.shadowColor = c;
+        ctx.shadowBlur = 8;
+        ctx.fillStyle = c;
+        ctx.fillText(`x${s.combo} COMBO!`, s.x, s.y - 50);
+        ctx.restore();
+    }
 }
 
 // Floating emojis above the heads of snakes that just sent an emote.
