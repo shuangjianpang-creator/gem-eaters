@@ -10,11 +10,14 @@ export const RANDOM_COLORS  = ['#56d364','#f0883e','#a371f7','#58a6ff','#f85149'
 export const COLOR_PALETTE = RANDOM_COLORS.slice();
 
 export const MODES_LIST = [
-    { id: 'ffa',     name: 'Free for All',        icon: '⚔️', description: 'Eat food, eat rivals. Highest score wins.' },
-    { id: 'lastman', name: 'Last Snake Standing', icon: '💀', description: 'One death and you\'re out. Last alive wins.' },
-    { id: 'teams',   name: 'Teams (Red vs Blue)', icon: '🚩', description: 'Auto-assigned. No friendly fire. Team score totals.' },
-    { id: 'koth',    name: 'King of the Hill',    icon: '👑', description: 'Stay in the gold ring to earn points. Highest score wins.' },
-    { id: 'tag',     name: 'Tag — you\'re it!',  icon: '👹', description: 'Collisions pass the "it" status. Score = time NOT being it.' },
+    { id: 'ffa',      name: 'Free for All',        icon: '⚔️', description: 'Eat food, eat rivals. Highest score wins.' },
+    { id: 'lastman',  name: 'Last Snake Standing', icon: '💀', description: 'One death and you\'re out. Last alive wins.' },
+    { id: 'teams',    name: 'Teams (Red vs Blue)', icon: '🚩', description: 'Auto-assigned. No friendly fire. Team score totals.' },
+    { id: 'koth',     name: 'King of the Hill',    icon: '👑', description: 'Stay in the gold ring to earn points. Highest score wins.' },
+    { id: 'tag',      name: 'Tag — you\'re it!',  icon: '👹', description: 'Collisions pass the "it" status. Score = time NOT being it.' },
+    { id: 'potato',   name: 'Hot Potato',          icon: '💣', description: '12s bomb on a random snake. Touch someone to pass it. Don\'t hold it when it blows.' },
+    { id: 'goldrush', name: 'Gold Rush',           icon: '🪙', description: 'No power-ups. Rare gold coins worth +5. Fight for every drop.' },
+    { id: 'boss',     name: 'Boss Snake',          icon: '🐲', description: 'A huge AI boss hunts the room. Cooperate — make it crash into your body to take it down.' },
 ];
 
 export const THEMES = {

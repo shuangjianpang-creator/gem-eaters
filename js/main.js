@@ -572,6 +572,8 @@ let spectatingId = null;
 let obstacles = [];
 let hill = null;
 let itPlayerId = null;
+let bombHolderId = null;
+let bombExpiresAt = 0;
 
 let renderSnakes = [];
 let targetSnakes = [];
@@ -700,6 +702,8 @@ function handleMessage(event) {
             obstacles = msg.obstacles || [];
             hill = msg.hill || null;
             itPlayerId = msg.itPlayerId || null;
+            bombHolderId = msg.bombHolderId || null;
+            bombExpiresAt = msg.bombExpiresAt || 0;
             applyMap(msg.map);
 
             const mySnake = msg.snakes.find(s => s.id === myId);
@@ -1207,6 +1211,7 @@ function showDeathPanel() {
     const reasonText = lastDeathReason === 'wall'     ? "Hit the wall."
                      : lastDeathReason === 'zone'     ? "Caught outside the shrinking zone!"
                      : lastDeathReason === 'obstacle' ? "Hit an obstacle."
+                     : lastDeathReason === 'bomb'     ? "BOOM! Caught holding the bomb."
                      : "Ran into another snake.";
     deathReasonEl.textContent = `${reasonText} Final score: ${lastDeathScore}`;
     const killerBlock = document.getElementById("killerBlock");
@@ -1322,6 +1327,9 @@ function ease(t) {
             next.push({
                 id: ts.id, name: ts.name, avatar: ts.avatar,
                 color: ts.color, pattern: ts.pattern, score: ts.score,
+                team: ts.team, combo: ts.combo,
+                shield: ts.shield, gold: ts.gold, speed: ts.speed, magnet: ts.magnet,
+                boss: ts.boss,
                 x: ts.x, y: ts.y, angle: ts.angle,
                 body: ts.body.map(s => ({ x: s.x, y: s.y })),
             });
@@ -1341,7 +1349,10 @@ function ease(t) {
         }
         cs.name = ts.name; cs.avatar = ts.avatar;
         cs.color = ts.color; cs.pattern = ts.pattern;
-        cs.score = ts.score;
+        cs.score = ts.score; cs.team = ts.team; cs.combo = ts.combo;
+        cs.shield = ts.shield; cs.gold = ts.gold;
+        cs.speed = ts.speed; cs.magnet = ts.magnet;
+        cs.boss = ts.boss;
         next.push(cs);
     }
     renderSnakes = next;
@@ -1385,16 +1396,60 @@ function render() {
     drawActiveEmotes();
     drawComboBadges();
     drawItMarker();
+    drawBombMarker();
 
     ctx.restore();
 
     drawUrgencyVignette();
     drawDeathFlash(ctx, canvas.width, canvas.height);
     drawEffectBadges();
+    drawBossBanner();
     renderLeaderboard();
     if (phase === "intermission") renderIntermission();
     updateTimerDisplay();
     requestAnimationFrame(render);
+}
+
+// Hot Potato: 💣 emoji + countdown ring above the bomb holder's head.
+function drawBombMarker() {
+    if (!bombHolderId) return;
+    const s = renderSnakes.find(x => x.id === bombHolderId);
+    if (!s) return;
+    const remaining = Math.max(0, bombExpiresAt - Date.now());
+    const frac = Math.min(1, remaining / 12000);
+    // Pulsing speeds up as the bomb ticks down
+    const pulseRate = 220 - (1 - frac) * 160;
+    const pulse = 0.6 + 0.4 * Math.sin(Date.now() / pulseRate);
+    // Red ring around the head
+    ctx.save();
+    ctx.shadowColor = '#f85149';
+    ctx.shadowBlur = 18 + (1 - frac) * 14;
+    ctx.strokeStyle = `rgba(248, 81, 73, ${pulse})`;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 24, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+    // 💣 above head
+    ctx.font = "30px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText('💣', s.x, s.y - 48);
+    // Countdown arc (shrinks as time runs out)
+    ctx.save();
+    ctx.strokeStyle = `rgba(255, 220, 100, ${0.85})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y - 48, 18, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+    // Big numeric seconds when ≤5s left
+    const sec = Math.ceil(remaining / 1000);
+    if (sec <= 5) {
+        ctx.fillStyle = '#ffec3d';
+        ctx.font = "bold 20px Arial";
+        ctx.fillText(String(sec), s.x, s.y - 48);
+    }
 }
 
 // Tag mode: red pulsing aura + 👹 emoji above the "it" snake's head.
@@ -1512,6 +1567,36 @@ function updateTimerDisplay() {
     } else {
         spectatorOverlayEl.style.display = "none";
     }
+}
+
+// Boss Snake HUD: a banner across the top of the screen telling players
+// who they're fighting and how long the boss currently is.
+function drawBossBanner() {
+    if (phase !== "playing") return;
+    const boss = renderSnakes.find(s => s.boss);
+    if (!boss) return;
+    const w = 320;
+    const h = 38;
+    const x = (canvas.width - w) / 2;
+    const y = 16;
+    ctx.save();
+    // Red gradient backdrop with dragon glyph
+    const grad = ctx.createLinearGradient(x, 0, x + w, 0);
+    grad.addColorStop(0, 'rgba(80, 8, 12, 0.92)');
+    grad.addColorStop(0.5, 'rgba(160, 22, 22, 0.92)');
+    grad.addColorStop(1, 'rgba(80, 8, 12, 0.92)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = '#ffec3d';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    // Text
+    ctx.fillStyle = '#ffec3d';
+    ctx.font = 'bold 18px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`🐲  BOSS  —  ${boss.body.length} segments`, x + w / 2, y + h / 2 + 1);
+    ctx.restore();
 }
 
 function drawEffectBadges() {
@@ -2159,6 +2244,34 @@ function powerupGlyph(type) {
 
 function drawFood(f) {
     const type = f.type || 'regular';
+    if (type === 'coin') {
+        // Gold Rush coin — bigger, brighter, dollar-sign glyph
+        const pulse = 0.9 + 0.1 * Math.sin(Date.now() / 220 + f.id);
+        const r = 9 * pulse;
+        // Ground shadow
+        ctx.fillStyle = 'rgba(0,0,0,0.42)';
+        ctx.beginPath();
+        ctx.ellipse(f.x + 2, f.y + 6, r * 1.05, r * 0.4, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Gold sphere with hot specular
+        ctx.save();
+        ctx.shadowColor = '#fde047';
+        ctx.shadowBlur = 14;
+        const grad = ctx.createRadialGradient(f.x - r * 0.4, f.y - r * 0.4, 0.5, f.x, f.y, r);
+        grad.addColorStop(0,    '#fff7c2');
+        grad.addColorStop(0.4,  '#facc15');
+        grad.addColorStop(1,    '#a16207');
+        ctx.fillStyle = grad;
+        ctx.beginPath(); ctx.arc(f.x, f.y, r, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+        // $ glyph
+        ctx.fillStyle = '#5b3a00';
+        ctx.font = `bold ${Math.round(r * 1.4)}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('$', f.x, f.y + 1);
+        return;
+    }
     if (type === 'regular') {
         const r = 6;
         // Drop shadow on the ground, offset down-right
@@ -2313,11 +2426,20 @@ function drawSnake(s, isMe) {
         ctx.fill();
     }
 
-    // --- 4. Subtle dark outline ---
+    // --- 4. Dark outline — boss snake gets a fat menacing red rim so it
+    //        reads as a threat at a glance even when off-center. ---
     ctx.beginPath(); traceBody();
-    ctx.strokeStyle = "rgba(0,0,0,0.36)";
-    ctx.lineWidth = 1;
+    if (s.boss) {
+        ctx.strokeStyle = "rgba(255, 60, 60, 0.95)";
+        ctx.lineWidth = 3;
+        ctx.shadowColor = '#f85149';
+        ctx.shadowBlur = 14;
+    } else {
+        ctx.strokeStyle = "rgba(0,0,0,0.36)";
+        ctx.lineWidth = 1;
+    }
     ctx.stroke();
+    ctx.shadowBlur = 0;
 
     drawSnakeTongue(s);
     drawSnakeHead(s, isMe);

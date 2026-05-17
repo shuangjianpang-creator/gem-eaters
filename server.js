@@ -54,7 +54,20 @@ const POWERUP_EFFECTS = {
 };
 
 // Game modes — owner picks in lobby
-const MODES = new Set(['ffa', 'lastman', 'teams', 'koth', 'tag']);
+const MODES = new Set(['ffa', 'lastman', 'teams', 'koth', 'tag', 'potato', 'goldrush', 'boss']);
+
+// Hot Potato: bomb timer + transfer rules
+const POTATO_BOMB_MS = 12_000;     // each hold lasts up to 12s before detonating
+const POTATO_REGRANT_MS = 1_500;   // after detonation, brief pause before re-tagging
+
+// Gold Rush: rare coin food; each coin worth +5 base
+const GOLD_RUSH_FOOD_COUNT = 60;
+const GOLD_RUSH_COIN_POINTS = 5;
+
+// Boss Snake: server-controlled mega-snake hunts players
+const BOSS_INITIAL_SEGMENTS = 60;
+const BOSS_SPEED_MUL = 1.45;
+const BOSS_KILL_BONUS = 50;        // every survivor scores this when the boss dies
 
 // King of the Hill: small circular hill at map center. +1 score per tick
 // (30/sec) for each snake whose head is inside.
@@ -281,7 +294,8 @@ function resetSnake(s, room) {
     }
     const angle = Math.random() * Math.PI * 2;
     const body = [];
-    for (let i = 0; i < INITIAL_SEGMENTS; i++) body.push({ x, y: y + i * SEGMENT_DISTANCE });
+    const segCount = s.boss ? BOSS_INITIAL_SEGMENTS : INITIAL_SEGMENTS;
+    for (let i = 0; i < segCount; i++) body.push({ x, y: y + i * SEGMENT_DISTANCE });
     s.x = x; s.y = y; s.angle = angle; s.body = body;
     s.targetX = x; s.targetY = y - 100;
     s.alive = true; s.score = 0; s.growthQueue = 0;
@@ -308,7 +322,12 @@ function makeRoom(name, ownerId) {
         safeZone: null,
         obstacles: [],
         hill: null,
-        itPlayerId: null,  // who's "it" in Tag mode
+        itPlayerId: null,        // who's "it" in Tag mode
+        bombHolderId: null,      // who's holding the bomb in Hot Potato mode
+        bombExpiresAt: 0,        // ms timestamp — bomb detonates at this time
+        bombRegrantAt: 0,        // ms timestamp — wait this long after a death before re-tagging
+        bossKey: null,           // members-map key of the boss snake in Boss Snake mode
+        bossDefeated: false,     // true after boss dies → end-round
     };
 }
 
@@ -316,6 +335,11 @@ function mapOf(room) { return MAPS_BY_ID.get(room.mapId) || MAPS[0]; }
 
 function randomFood(room, x, y, color, type) {
     const size = mapOf(room).size;
+    // Gold Rush: every food is a +5 coin, no power-ups, gold color.
+    if (room.mode === 'goldrush' && !type) {
+        type = 'coin';
+        if (!color) color = '#facc15';
+    }
     // Roll a power-up if no type explicitly requested
     let t = type;
     if (!t) {
@@ -348,7 +372,7 @@ function randomFood(room, x, y, color, type) {
 }
 
 function fillFood(room) {
-    const target = mapOf(room).foodCount;
+    const target = room.mode === 'goldrush' ? GOLD_RUSH_FOOD_COUNT : mapOf(room).foodCount;
     while (room.food.length < target) room.food.push(randomFood(room));
 }
 
@@ -361,6 +385,21 @@ function killSnake(room, s, reason, ws, killer = null) {
     if (room.mode === 'tag' && s.id === room.itPlayerId) {
         const alive = [...room.members.values()].filter(p => p !== s && p.alive);
         room.itPlayerId = alive.length ? alive[Math.floor(Math.random() * alive.length)].id : null;
+    }
+    // Hot Potato: if the bomb holder just died, clear holder + schedule a
+    // re-tag a moment later so survivors get a beat.
+    if (room.mode === 'potato' && s.id === room.bombHolderId) {
+        room.bombHolderId = null;
+        room.bombRegrantAt = Date.now() + POTATO_REGRANT_MS;
+    }
+    // Boss Snake: the boss dying is a cooperative win — flag for end-round
+    // logic. Every surviving player gets the kill bonus + the killer toast.
+    if (s.boss) {
+        room.bossDefeated = true;
+        for (const [, p] of room.members) {
+            if (p === s || !p.alive) continue;
+            p.score += BOSS_KILL_BONUS;
+        }
     }
     for (let i = 0; i < s.body.length; i += FOOD_PER_DEAD_SEGMENTS) {
         const seg = s.body[i];
@@ -415,9 +454,11 @@ function updateSnake(room, s, ws, now) {
     while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
     s.angle += angleDiff * TURN_SPEED;
 
-    // Effective speed: base * optional speed power-up
+    // Effective speed: base * optional speed power-up. Boss snake gets a
+    // permanent multiplier so it's an actual threat.
     let speed = SPEED;
     if (s.speedUntil > now) speed *= POWERUP_EFFECTS.speed.speedMul;
+    if (s.boss) speed *= BOSS_SPEED_MUL;
 
     s.x += Math.cos(s.angle) * speed;
     s.y += Math.sin(s.angle) * speed;
@@ -485,6 +526,8 @@ function checkSnakeCollisions(room, now) {
     const deaths = [];
     // Tag: track "it" swaps to apply after iteration (avoid mutating during loop)
     const tagSwaps = [];
+    // Hot Potato: track bomb passes (whoever just touched the holder gets it)
+    const bombPasses = [];
     for (const [wsA, a] of room.members) {
         if (!a.alive) continue;
         if (a.shieldUntil > now) continue;
@@ -512,11 +555,26 @@ function checkSnakeCollisions(room, now) {
             }
             // Both "it" (impossible) or both non-it → death as normal
         }
+        // Hot Potato: contact between holder and non-holder PASSES the bomb,
+        // no death. Non-holder vs non-holder kills as usual.
+        if (room.mode === 'potato' && room.bombHolderId) {
+            const aHolds = a.id === room.bombHolderId;
+            const bHolds = killer.id === room.bombHolderId;
+            if (aHolds !== bHolds) {
+                bombPasses.push(aHolds ? killer.id : a.id);
+                continue;
+            }
+        }
         deaths.push([a, wsA, killer]);
     }
     for (const [s, ws, killer] of deaths) killSnake(room, s, 'snake', ws, killer);
     // Apply tag swaps (latest swap wins if multiple collisions happened simultaneously)
     if (tagSwaps.length > 0) room.itPlayerId = tagSwaps[tagSwaps.length - 1];
+    // Apply bomb pass + reset timer for fairness on each pass
+    if (bombPasses.length > 0) {
+        room.bombHolderId = bombPasses[bombPasses.length - 1];
+        room.bombExpiresAt = now + POTATO_BOMB_MS;
+    }
 }
 
 function checkFood(room, now) {
@@ -555,7 +613,10 @@ function checkFood(room, now) {
                     : 1;
                 s.lastEatAt = now;
                 const goldMul = s.goldUntil > now ? POWERUP_EFFECTS.gold.scoreMul : 1;
-                s.score += s.comboLevel * goldMul;
+                // Coins (Gold Rush) award a fixed base instead of 1; power-ups
+                // (handled by applyPowerup) carry their own score-side effects.
+                const base = f.type === 'coin' ? GOLD_RUSH_COIN_POINTS : 1;
+                s.score += base * s.comboLevel * goldMul;
                 applyPowerup(s, f.type, now);
             }
         }
@@ -614,6 +675,28 @@ function startGame(room) {
     } else {
         room.itPlayerId = null;
     }
+    // Hot Potato: arm bomb on a random member; first detonation = ROUND_START + POTATO_BOMB_MS
+    room.bombHolderId = null;
+    room.bombExpiresAt = 0;
+    room.bombRegrantAt = 0;
+    if (room.mode === 'potato') {
+        const players = [...room.members.values()];
+        if (players.length > 0) {
+            room.bombHolderId = players[Math.floor(Math.random() * players.length)].id;
+            room.bombExpiresAt = Date.now() + POTATO_BOMB_MS;
+        }
+    }
+    // Boss Snake: clean up any previous boss and spawn a fresh one as the
+    // last entry so AI runs after players (so it sees their latest positions).
+    if (room.bossKey && room.members.has(room.bossKey)) room.members.delete(room.bossKey);
+    room.bossKey = null;
+    room.bossDefeated = false;
+    if (room.mode === 'boss') {
+        const boss = makeBossSnake();
+        const key = 'boss:' + boss.id;
+        room.bossKey = key;
+        room.members.set(key, boss);
+    }
     fillFood(room);
 
     // Teams mode: split members alternately into red/blue, override color
@@ -637,6 +720,7 @@ function startGame(room) {
 function endRound(room) {
     const standings = [];
     for (const [, s] of room.members) {
+        if (s.boss) continue;  // boss isn't a competitor
         standings.push({
             id: s.id, name: s.name, avatar: s.avatar,
             color: s.color, pattern: s.pattern, score: s.score,
@@ -653,6 +737,14 @@ function endRound(room) {
 function returnToLobby(room) {
     room.phase = 'lobby';
     room.phaseEndsAt = 0;
+    // Boss snake is round-scoped — yank it from the room so it doesn't
+    // appear in lobby/leaderboard slots between rounds.
+    if (room.bossKey && room.members.has(room.bossKey)) room.members.delete(room.bossKey);
+    room.bossKey = null;
+    room.bossDefeated = false;
+    room.bombHolderId = null;
+    room.bombExpiresAt = 0;
+    room.bombRegrantAt = 0;
     for (const [, s] of room.members) {
         s.alive = false;
         s.body = [];
@@ -665,11 +757,13 @@ function returnToLobby(room) {
 function buildRoomList() {
     const list = [];
     for (const room of rooms.values()) {
+        let count = 0;
+        for (const [, s] of room.members) if (!s.boss) count++;
         list.push({
             id: room.id,
             name: room.name,
             phase: room.phase,
-            playerCount: room.members.size,
+            playerCount: count,
             maxPlayers: MAX_ROOM_PLAYERS,
         });
     }
@@ -686,6 +780,7 @@ function broadcastRoomList() {
 function buildLobbySnapshot(room) {
     const players = [];
     for (const [, s] of room.members) {
+        if (s.boss) continue;  // boss is round-scoped, don't show in lobby
         players.push({
             id: s.id, name: s.name, avatar: s.avatar,
             color: s.color, pattern: s.pattern,
@@ -741,6 +836,7 @@ function buildGameSnapshotFor(room, viewer) {
             gold:    s.goldUntil   > now,
             speed:   s.speedUntil  > now,
             magnet:  s.magnetUntil > now,
+            boss:    !!s.boss,
         });
     }
     const nearbyFood = [];
@@ -750,6 +846,7 @@ function buildGameSnapshotFor(room, viewer) {
     }
     const leaderboard = [];
     for (const [, s] of room.members) {
+        if (s.boss) continue;  // boss isn't a competitor — keep the board clean
         leaderboard.push({
             id: s.id, name: s.name, avatar: s.avatar,
             color: s.color, pattern: s.pattern, team: s.team,
@@ -781,6 +878,8 @@ function buildGameSnapshotFor(room, viewer) {
         obstacles: room.obstacles,
         hill: room.hill,
         itPlayerId: room.itPlayerId,
+        bombHolderId: room.bombHolderId,
+        bombExpiresAt: room.bombExpiresAt,
         safeZone: room.safeZone,
     };
 }
@@ -862,6 +961,34 @@ function tick() {
                     if (s.alive && s.id !== room.itPlayerId) s.score += 1;
                 }
             }
+            // Hot Potato: score time NOT holding the bomb + handle detonation/regrant.
+            if (room.mode === 'potato') {
+                for (const [, s] of room.members) {
+                    if (s.alive && s.id !== room.bombHolderId) s.score += 1;
+                }
+                if (room.bombHolderId && now >= room.bombExpiresAt) {
+                    // Find the holder + their ws so the death panel attributes correctly.
+                    let holderWs = null, holder = null;
+                    for (const [ws, s] of room.members) {
+                        if (s.id === room.bombHolderId) { holderWs = ws; holder = s; break; }
+                    }
+                    if (holder && holder.alive) killSnake(room, holder, 'bomb', holderWs);
+                    // killSnake clears bombHolderId + sets bombRegrantAt
+                }
+                if (!room.bombHolderId && room.bombRegrantAt && now >= room.bombRegrantAt) {
+                    const alive = [...room.members.values()].filter(p => p.alive && !p.bot);
+                    const pool  = alive.length ? alive : [...room.members.values()].filter(p => p.alive);
+                    if (pool.length > 0) {
+                        room.bombHolderId = pool[Math.floor(Math.random() * pool.length)].id;
+                        room.bombExpiresAt = now + POTATO_BOMB_MS;
+                        room.bombRegrantAt = 0;
+                    }
+                }
+            }
+            // Boss Snake: round ends the moment the boss dies. Survivors win.
+            if (room.mode === 'boss' && room.bossDefeated) {
+                endRound(room);
+            }
             // Mode-specific early end conditions
             if (room.mode === 'lastman' && room.members.size >= 2) {
                 let alive = 0;
@@ -931,6 +1058,21 @@ function addBotToRoom(room) {
     console.log(`room ${room.id}: bot ${bot.name} added (${room.members.size}/${MAX_ROOM_PLAYERS})`);
 }
 
+// Boss snake: an AI snake with the `boss` flag. Bigger initial body
+// (BOSS_INITIAL_SEGMENTS), faster (BOSS_SPEED_MUL), uses bot AI but with
+// a player-hunting override. Lives in room.members alongside players.
+function makeBossSnake() {
+    return {
+        ...makeBot(),
+        name: 'BOSS',
+        avatar: '🐲',
+        color: '#dc143c',
+        pattern: 'stripes',
+        bot: true,
+        boss: true,
+    };
+}
+
 function removeBotFromRoom(room) {
     let lastKey = null;
     for (const [key, s] of room.members) if (s.bot) lastKey = key;
@@ -977,8 +1119,21 @@ function updateBotAI(room, bot) {
         }
     }
 
-    // ---- 3. Fall back to nearest food ----
-    if (!target) {
+    // Boss snake: always hunt the nearest PLAYER (ignore size, ignore range).
+    // Food doesn't matter to the boss.
+    if (bot.boss) {
+        let bestD = Infinity;
+        target = null;
+        for (const [, s] of room.members) {
+            if (s === bot || !s.alive || s.boss) continue;
+            const dx = s.x - bot.x, dy = s.y - bot.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < bestD) { bestD = d2; target = s; }
+        }
+    }
+
+    // ---- 3. Fall back to nearest food (non-boss bots) ----
+    if (!target && !bot.boss) {
         let bestD = Infinity;
         for (const f of room.food) {
             const dx = f.x - bot.x, dy = f.y - bot.y;
