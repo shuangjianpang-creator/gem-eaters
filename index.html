@@ -133,6 +133,34 @@
         .emoteBtn:hover { background: #1a1f26; border-color: #58a6ff; }
         .emoteBtn:active { transform: scale(0.92); }
 
+        #settingsOverlay {
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,0.7);
+            z-index: 90;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .settingsPanel {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 22px 26px;
+            min-width: 300px;
+            color: #c9d1d9;
+        }
+        .settingsPanel h2 { margin: 0 0 14px 0; }
+        .settingRow {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #21262d;
+        }
+        .settingRow > span:first-child { font-size: 13px; }
+        .settingControl { display: flex; align-items: center; gap: 8px; }
+        .settingControl input[type=range] { width: 120px; }
+        .settingControl input[type=checkbox] { width: 18px; height: 18px; accent-color: #56d364; }
+        .settingHint { font-size: 11px; color: #8b949e; margin: 10px 0 14px 0; }
+        .settingsActions { text-align: right; }
+        .settingsActions button { padding: 6px 18px !important; margin: 0 !important; }
+
         /* Killer card in death panel */
         #killerBlock { margin: 6px 0 12px 0; }
         .killedByLabel {
@@ -730,6 +758,30 @@
         <span class="pill" id="status">connecting...</span>
         <span class="pill clickable" id="muteToggle" title="Mute / unmute sounds">🔊</span>
         <span class="pill clickable" id="emoteToggle" title="Send an emote">💬</span>
+        <span class="pill clickable" id="settingsToggle" title="Settings">⚙️</span>
+    </div>
+
+    <div id="settingsOverlay" style="display:none">
+        <div class="settingsPanel">
+            <h2>Settings</h2>
+            <label class="settingRow">
+                <span>Sound volume</span>
+                <div class="settingControl">
+                    <input id="settingVolume" type="range" min="0" max="100" step="5">
+                    <span id="settingVolumeLabel">70%</span>
+                </div>
+            </label>
+            <label class="settingRow">
+                <span>Reduce motion</span>
+                <div class="settingControl">
+                    <input id="settingReduceMotion" type="checkbox">
+                </div>
+            </label>
+            <p class="settingHint">Reduce motion turns off particles, screen flashes, combo text and the urgency vignette.</p>
+            <div class="settingsActions">
+                <button id="settingsClose">Close</button>
+            </div>
+        </div>
     </div>
     <div id="emoteWheel" style="display:none">
         <button class="emoteBtn" data-emote="👋">👋</button>
@@ -1323,6 +1375,7 @@ const activeEmotes = new Map();
 const particles = [];
 
 function spawnEatPuff(x, y, color) {
+    if (typeof settings !== 'undefined' && settings.reduceMotion) return;
     for (let i = 0; i < 7; i++) {
         const ang = Math.random() * Math.PI * 2;
         const sp = 1.5 + Math.random() * 2;
@@ -1370,7 +1423,10 @@ function spawnDeathBurst(snake) {
 
 // Brief white-to-transparent screen flash on your own death.
 let deathFlashUntil = 0;
-function triggerDeathFlash() { deathFlashUntil = Date.now() + 280; }
+function triggerDeathFlash() {
+    if (typeof settings !== 'undefined' && settings.reduceMotion) return;
+    deathFlashUntil = Date.now() + 280;
+}
 function drawDeathFlash() {
     if (Date.now() > deathFlashUntil) return;
     const remaining = deathFlashUntil - Date.now();
@@ -1539,7 +1595,7 @@ function tone(freq, dur, type = 'sine', vol = 0.2, delay = 0) {
     const g = ac.createGain();
     osc.type = type;
     osc.frequency.setValueAtTime(freq, t0);
-    g.gain.setValueAtTime(vol, t0);
+    g.gain.setValueAtTime(vol * (settings ? settings.volume : 1), t0);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
     osc.connect(g); g.connect(ac.destination);
     osc.start(t0); osc.stop(t0 + dur);
@@ -1555,6 +1611,38 @@ muteToggleEl.addEventListener("click", () => {
     audioMuted = !audioMuted;
     localStorage.setItem("snakeMuted", audioMuted ? "1" : "0");
     muteToggleEl.textContent = audioMuted ? "🔇" : "🔊";
+});
+
+// Settings (volume + reduce motion) persisted to localStorage
+const settings = Object.assign(
+    { volume: 0.7, reduceMotion: false },
+    JSON.parse(localStorage.getItem("snakeSettings") || "{}")
+);
+function saveSettings() { localStorage.setItem("snakeSettings", JSON.stringify(settings)); }
+function shouldReduceMotion() { return !!settings.reduceMotion; }
+
+const settingsToggle = document.getElementById("settingsToggle");
+const settingsOverlay = document.getElementById("settingsOverlay");
+const settingVolume = document.getElementById("settingVolume");
+const settingVolumeLabel = document.getElementById("settingVolumeLabel");
+const settingReduceMotion = document.getElementById("settingReduceMotion");
+const settingsClose = document.getElementById("settingsClose");
+
+settingVolume.value = Math.round(settings.volume * 100);
+settingVolumeLabel.textContent = settingVolume.value + "%";
+settingReduceMotion.checked = settings.reduceMotion;
+
+settingsToggle.addEventListener("click", () => { settingsOverlay.style.display = ""; });
+settingsClose.addEventListener("click", () => { settingsOverlay.style.display = "none"; });
+settingsOverlay.addEventListener("click", (e) => { if (e.target === settingsOverlay) settingsOverlay.style.display = "none"; });
+settingVolume.addEventListener("input", () => {
+    settings.volume = settingVolume.value / 100;
+    settingVolumeLabel.textContent = settingVolume.value + "%";
+    saveSettings();
+});
+settingReduceMotion.addEventListener("change", () => {
+    settings.reduceMotion = settingReduceMotion.checked;
+    saveSettings();
 });
 
 // Emote wheel: toggle visibility, send chosen emote, auto-close
@@ -2509,6 +2597,7 @@ function drawItMarker() {
 
 // Floating "xN COMBO!" text above snakes with an active combo level.
 function drawComboBadges() {
+    if (settings.reduceMotion) return;
     for (const s of renderSnakes) {
         if (!s.combo || s.combo < 2) continue;
         const isMe = s.id === myId;
@@ -2550,6 +2639,7 @@ function drawActiveEmotes() {
 // Dark red vignette closes in from the edges during the final 30 seconds.
 function drawUrgencyVignette() {
     if (phase !== "playing" || !phaseEndsAt) return;
+    if (settings.reduceMotion) return;
     const remaining = Math.max(0, phaseEndsAt - Date.now()) / 1000;
     if (remaining > 30) return;
     const intensity = Math.min(1, (30 - remaining) / 30);  // 0 → 1 as it runs out
