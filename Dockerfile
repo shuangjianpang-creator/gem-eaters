@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY server.js index.html style.css manifest.json sw.js icon.png icon-192.png ./
+COPY server.js index.html style.css game.js manifest.json sw.js icon.png icon-192.png ./
 
 ENV NODE_ENV=production
 EXPOSE 8080
