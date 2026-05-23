@@ -153,7 +153,20 @@ const httpServer = http.createServer((req, res) => {
     });
 });
 
-const wss = new WebSocketServer({ server: httpServer });
+// permessage-deflate compresses every frame transparently (browser ws supports
+// it natively). Tuned for short, repetitive JSON game-state frames: small
+// memory windows + concurrency cap so a busy room can't pin server memory.
+const wss = new WebSocketServer({
+    server: httpServer,
+    perMessageDeflate: {
+        zlibDeflateOptions: { level: 6, memLevel: 7, windowBits: 13 },
+        zlibInflateOptions: { windowBits: 13 },
+        clientNoContextTakeover: true,
+        serverNoContextTakeover: true,
+        concurrencyLimit: 10,
+        threshold: 256,
+    },
+});
 
 // -------- Optional Redis persistence --------
 // Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN to keep rooms alive
@@ -803,6 +816,16 @@ function buildLobbySnapshot(room) {
     };
 }
 
+function snakeIdentityKey(s) {
+    return `${s.name}|${s.avatar}|${s.color}|${s.pattern}|${s.team || ''}|${s.boss?1:0}|${s.bot?1:0}`;
+}
+
+function leaderboardKey(arr) {
+    let k = '';
+    for (const e of arr) k += `${e.id}:${e.score}:${e.alive?1:0}:${e.eliminated?1:0};`;
+    return k;
+}
+
 function buildGameSnapshotFor(room, viewer) {
     // Eliminated viewers spectate — pick the first alive snake as their focal
     // point so the view radius and snapshot are centered on something they can
@@ -816,83 +839,176 @@ function buildGameSnapshotFor(room, viewer) {
     const cx = specTarget ? specTarget.x : viewer.x;
     const cy = specTarget ? specTarget.y : viewer.y;
     const r2 = (VIEW_RADIUS + 200) ** 2;
+    const now = Date.now();
+
+    // Per-viewer cache of what we've already shipped, so unchanged fields can
+    // stay off the wire. Identity (name/avatar/color/pattern/team) is sent
+    // once per snake; low-rate fields (room/map/obstacles/hill/safeZone/phase/
+    // leaderboard/standings/tag-and-bomb state) only re-send on change.
+    if (!viewer._sent) viewer._sent = {
+        identities: new Map(),
+        foodInfo: new Map(),  // id -> "color|type" — color/type cached client-side
+        room: '', map: '', obstacles: '', hill: '', safeZone: '',
+        phase: null, phaseEndsAt: -1, roundNumber: -1, standings: '',
+        leaderboard: '',
+        itPlayerId: undefined, bombHolderId: undefined, bombExpiresAt: -1,
+    };
+    const sent = viewer._sent;
+
+    // Snakes — dynamic per-tick state only. Identity ships separately below.
     const snakes = [];
     for (const [, s] of room.members) {
         if (!s.alive) continue;
-        // Boss snake is always included — players need to be able to see the
-        // threat (and the HUD banner relies on it appearing in the snapshot).
+        // Boss snake is always included — players need to see the threat (and
+        // the HUD banner relies on it appearing in the snapshot).
         if (s !== viewer && s !== specTarget && !s.boss) {
             const dx = s.x - cx, dy = s.y - cy;
             if (dx * dx + dy * dy > r2) continue;
         }
-        const now = Date.now();
-        // Combo only "visible" while the window is still open
         const liveCombo = (now - s.lastEatAt) < COMBO_WINDOW_MS ? s.comboLevel : 0;
-        snakes.push({
-            id: s.id, name: s.name, avatar: s.avatar,
-            x: s.x, y: s.y, angle: s.angle, body: s.body,
-            color: s.color, pattern: s.pattern,
-            score: s.score, team: s.team,
-            combo: liveCombo,
-            shield:  s.shieldUntil > now,
-            gold:    s.goldUntil   > now,
-            speed:   s.speedUntil  > now,
-            magnet:  s.magnetUntil > now,
-            boss:    !!s.boss,
-        });
+        // Round coords to integers — sub-pixel precision is invisible after
+        // the client's interpolation between 30Hz frames, and roughly halves
+        // the JSON-encoded body size.
+        const body = new Array(s.body.length);
+        for (let i = 0; i < s.body.length; i++) {
+            const p = s.body[i];
+            body[i] = { x: Math.round(p.x), y: Math.round(p.y) };
+        }
+        const entry = {
+            id: s.id,
+            x: Math.round(s.x), y: Math.round(s.y),
+            angle: Math.round(s.angle * 1000) / 1000,
+            body,
+            score: s.score,
+        };
+        if (liveCombo)            entry.combo  = liveCombo;
+        if (s.shieldUntil > now)  entry.shield = 1;
+        if (s.goldUntil   > now)  entry.gold   = 1;
+        if (s.speedUntil  > now)  entry.speed  = 1;
+        if (s.magnetUntil > now)  entry.magnet = 1;
+        snakes.push(entry);
     }
+
+    // Identity diff — only send for snakes whose identity key changed since
+    // we last informed this viewer. Prune entries for departed snakes.
+    const memberIds = new Set();
+    const newIdentities = [];
+    for (const [, s] of room.members) {
+        if (s.boss && !s.alive) continue;  // dead boss is gone — drop it
+        memberIds.add(s.id);
+        const key = snakeIdentityKey(s);
+        if (sent.identities.get(s.id) !== key) {
+            const idEntry = {
+                id: s.id, name: s.name, avatar: s.avatar,
+                color: s.color, pattern: s.pattern,
+            };
+            if (s.team) idEntry.team = s.team;
+            if (s.boss) idEntry.boss = 1;
+            newIdentities.push(idEntry);
+            sent.identities.set(s.id, key);
+        }
+    }
+    for (const id of sent.identities.keys()) {
+        if (!memberIds.has(id)) sent.identities.delete(id);
+    }
+
+    // Food: positions update every tick (magnet pulls them; new spawns), but
+    // color and type are immutable per food id. Cache (color|type) per viewer
+    // and ship them only on first sight — saves ~half the per-food bytes.
+    const foodInfo = sent.foodInfo;
     const nearbyFood = [];
     for (const f of room.food) {
         const dx = f.x - cx, dy = f.y - cy;
-        if (dx * dx + dy * dy < r2) nearbyFood.push(f);
+        if (dx * dx + dy * dy < r2) {
+            const key = `${f.color}|${f.type || ''}`;
+            const entry = {
+                id: f.id,
+                x: Math.round(f.x), y: Math.round(f.y),
+            };
+            if (foodInfo.get(f.id) !== key) {
+                entry.color = f.color;
+                if (f.type) entry.type = f.type;
+                foodInfo.set(f.id, key);
+            }
+            nearbyFood.push(entry);
+        }
     }
-    const leaderboard = [];
+
+    // Leaderboard — compact (no identity; client merges from its cache).
+    const lb = [];
     for (const [, s] of room.members) {
-        if (s.boss) continue;  // boss isn't a competitor — keep the board clean
-        leaderboard.push({
-            id: s.id, name: s.name, avatar: s.avatar,
-            color: s.color, pattern: s.pattern, team: s.team,
-            score: s.score, alive: s.alive, eliminated: !!s.eliminated,
-        });
+        if (s.boss) continue;
+        lb.push({ id: s.id, score: s.score, alive: s.alive, eliminated: !!s.eliminated });
     }
-    leaderboard.sort((a, b) => b.score - a.score);
-    if (leaderboard.length > 10) leaderboard.length = 10;
-    const map = mapOf(room);
+    lb.sort((a, b) => b.score - a.score);
+    if (lb.length > 10) lb.length = 10;
+    const lbKey = leaderboardKey(lb);
+
     // Active power-ups remaining (for "me" only — others' shown via flags above)
-    const now = Date.now();
     const myEffects = {
         goldRemain:   Math.max(0, viewer.goldUntil   - now),
         shieldRemain: Math.max(0, viewer.shieldUntil - now),
         speedRemain:  Math.max(0, viewer.speedUntil  - now),
         magnetRemain: Math.max(0, viewer.magnetUntil - now),
     };
-    return {
+
+    const map = mapOf(room);
+    const roomInfo = { id: room.id, name: room.name, ownerId: room.ownerId, mapId: room.mapId, mode: room.mode };
+    const mapInfo  = { id: map.id, name: map.name, theme: map.theme, size: map.size };
+    const roomKey      = JSON.stringify(roomInfo);
+    const mapKey       = JSON.stringify(mapInfo);
+    const obstaclesKey = room.obstacles ? JSON.stringify(room.obstacles) : '';
+    const hillKey      = room.hill      ? JSON.stringify(room.hill)      : '';
+    const safeZoneKey  = room.safeZone  ? JSON.stringify(room.safeZone)  : '';
+    const standingsKey = room.lastStandings ? JSON.stringify(room.lastStandings) : '';
+
+    const out = {
         type: 'gameState',
-        snakes, food: nearbyFood, leaderboard,
-        phase: room.phase, phaseEndsAt: room.phaseEndsAt,
-        roundNumber: room.roundNumber,
-        standings: room.lastStandings,
-        room: { id: room.id, name: room.name, ownerId: room.ownerId, mapId: room.mapId, mode: room.mode },
-        map: { id: map.id, name: map.name, theme: map.theme, size: map.size },
+        snakes,
+        food: nearbyFood,
         myEffects,
         meEliminated: !!viewer.eliminated,
         spectatingId: specTarget ? specTarget.id : null,
-        obstacles: room.obstacles,
-        hill: room.hill,
-        itPlayerId: room.itPlayerId,
-        bombHolderId: room.bombHolderId,
-        bombExpiresAt: room.bombExpiresAt,
-        safeZone: room.safeZone,
     };
+    if (newIdentities.length) out.identities = newIdentities;
+    if (lbKey !== sent.leaderboard) { out.leaderboard = lb; sent.leaderboard = lbKey; }
+    if (roomKey !== sent.room)      { out.room        = roomInfo;       sent.room = roomKey; }
+    if (mapKey !== sent.map)        { out.map         = mapInfo;        sent.map  = mapKey; }
+    if (obstaclesKey !== sent.obstacles) { out.obstacles = room.obstacles || []; sent.obstacles = obstaclesKey; }
+    if (hillKey !== sent.hill)           { out.hill      = room.hill     || null; sent.hill      = hillKey; }
+    if (safeZoneKey !== sent.safeZone)   { out.safeZone  = room.safeZone || null; sent.safeZone  = safeZoneKey; }
+    if (room.phase !== sent.phase)             { out.phase       = room.phase;       sent.phase       = room.phase; }
+    if (room.phaseEndsAt !== sent.phaseEndsAt) { out.phaseEndsAt = room.phaseEndsAt; sent.phaseEndsAt = room.phaseEndsAt; }
+    if (room.roundNumber !== sent.roundNumber) { out.roundNumber = room.roundNumber; sent.roundNumber = room.roundNumber; }
+    if (standingsKey !== sent.standings)       { out.standings   = room.lastStandings || []; sent.standings = standingsKey; }
+    const itId   = room.itPlayerId   || null;
+    const bombId = room.bombHolderId || null;
+    const bombEx = room.bombExpiresAt || 0;
+    if (itId   !== sent.itPlayerId)    { out.itPlayerId    = itId;   sent.itPlayerId    = itId; }
+    if (bombId !== sent.bombHolderId)  { out.bombHolderId  = bombId; sent.bombHolderId  = bombId; }
+    if (bombEx !== sent.bombExpiresAt) { out.bombExpiresAt = bombEx; sent.bombExpiresAt = bombEx; }
+
+    return out;
 }
 
 function broadcastRoom(room) {
     if (room.phase === 'lobby') {
-        const snap = JSON.stringify(buildLobbySnapshot(room));
+        // Lobby state only changes on join/leave/ready/owner-action — not 30Hz.
+        // Hash the snapshot and skip the broadcast if nothing changed since
+        // last tick. Per-client _sentLobby guards against missing the very
+        // first snapshot for a newly-joined viewer.
+        const snapObj = buildLobbySnapshot(room);
+        const snap = JSON.stringify(snapObj);
+        const changed = room._lastLobbySnap !== snap;
         for (const [ws] of room.members) {
             if (typeof ws === 'string') continue;     // bots have string keys
-            if (ws.readyState === 1) ws.send(snap);
+            if (ws.readyState !== 1) continue;
+            if (changed || ws._sentLobby !== snap) {
+                ws.send(snap);
+                ws._sentLobby = snap;
+            }
         }
+        room._lastLobbySnap = snap;
     } else {
         for (const [ws, s] of room.members) {
             if (typeof ws === 'string') continue;

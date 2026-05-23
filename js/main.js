@@ -362,6 +362,33 @@ let isReady = false;
 
 const playerImages = new Map();
 const activeEmotes = new Map();
+// Server sends each snake's static identity (name/avatar/color/pattern/team/
+// boss) only on first sight and on change. We cache it here and merge into
+// every per-tick snake + leaderboard entry so renderers see the same shape
+// they always did.
+const snakeIdentities = new Map();
+// Food color/type are immutable per food id. Server only sends them on first
+// sight; on subsequent ticks each food entry is just {id, x, y} (positions
+// move when magnet powerup pulls them, so x/y stay in the per-tick payload).
+const foodInfoCache = new Map();
+function mergeIdentity(s) {
+    const id = snakeIdentities.get(s.id);
+    if (!id) return s;
+    if (s.name    === undefined) s.name    = id.name;
+    if (s.avatar  === undefined) s.avatar  = id.avatar;
+    if (s.color   === undefined) s.color   = id.color;
+    if (s.pattern === undefined) s.pattern = id.pattern;
+    if (s.team    === undefined && id.team) s.team = id.team;
+    if (s.boss    === undefined && id.boss) s.boss = !!id.boss;
+    // Server omits inactive flags entirely (saved bytes) — normalize to booleans
+    // so render code can keep using `s.shield`, `s.gold`, etc. as truthy checks.
+    s.shield = !!s.shield;
+    s.gold   = !!s.gold;
+    s.speed  = !!s.speed;
+    s.magnet = !!s.magnet;
+    s.boss   = !!s.boss;
+    return s;
+}
 
 // ---------------- Obstacles (theme-colored deadly props) ----------------
 function drawObstacles() {
@@ -686,25 +713,49 @@ function handleMessage(event) {
         case "gameState": {
             const prevPhase = phase;
             const prevFood = foodList;
+            // Identity diff — server only ships these on first sight / change
+            if (msg.identities) {
+                for (const id of msg.identities) snakeIdentities.set(id.id, id);
+            }
+            for (const s of msg.snakes) mergeIdentity(s);
             targetSnakes = msg.snakes;
+            // Merge cached color/type onto food entries the server sent compact
+            for (const f of msg.food) {
+                if (f.color !== undefined) {
+                    foodInfoCache.set(f.id, { color: f.color, type: f.type });
+                } else {
+                    const ci = foodInfoCache.get(f.id);
+                    if (ci) { f.color = ci.color; f.type = ci.type; }
+                }
+            }
             foodList = msg.food;
-            leaderboard = msg.leaderboard;
-            phase = msg.phase;
-            phaseEndsAt = msg.phaseEndsAt;
-            roundNumber = msg.roundNumber;
-            standings = msg.standings;
-            currentRoom = msg.room;
-            if (msg.room && msg.room.mode) currentMode = msg.room.mode;
+            // Low-rate fields: server omits them when unchanged since this
+            // viewer's last snapshot — preserve previous local state in that
+            // case (do NOT clobber with undefined).
+            if (msg.leaderboard !== undefined) {
+                leaderboard = msg.leaderboard.map(e => {
+                    const id = snakeIdentities.get(e.id);
+                    return id ? { ...e, name: id.name, avatar: id.avatar, color: id.color, pattern: id.pattern, team: id.team } : e;
+                });
+            }
+            if (msg.phase        !== undefined) phase        = msg.phase;
+            if (msg.phaseEndsAt  !== undefined) phaseEndsAt  = msg.phaseEndsAt;
+            if (msg.roundNumber  !== undefined) roundNumber  = msg.roundNumber;
+            if (msg.standings    !== undefined) standings    = msg.standings;
+            if (msg.room         !== undefined) {
+                currentRoom = msg.room;
+                if (msg.room.mode) currentMode = msg.room.mode;
+            }
             if (msg.myEffects) myEffects = msg.myEffects;
             meEliminated = !!msg.meEliminated;
             spectatingId = msg.spectatingId || null;
-            safeZone = msg.safeZone || null;
-            obstacles = msg.obstacles || [];
-            hill = msg.hill || null;
-            itPlayerId = msg.itPlayerId || null;
-            bombHolderId = msg.bombHolderId || null;
-            bombExpiresAt = msg.bombExpiresAt || 0;
-            applyMap(msg.map);
+            if (msg.safeZone      !== undefined) safeZone      = msg.safeZone      || null;
+            if (msg.obstacles     !== undefined) obstacles     = msg.obstacles     || [];
+            if (msg.hill          !== undefined) hill          = msg.hill          || null;
+            if (msg.itPlayerId    !== undefined) itPlayerId    = msg.itPlayerId    || null;
+            if (msg.bombHolderId  !== undefined) bombHolderId  = msg.bombHolderId  || null;
+            if (msg.bombExpiresAt !== undefined) bombExpiresAt = msg.bombExpiresAt || 0;
+            if (msg.map           !== undefined) applyMap(msg.map);
 
             const mySnake = msg.snakes.find(s => s.id === myId);
             if (mySnake && mySnake.combo) trackCombo(mySnake.combo);
